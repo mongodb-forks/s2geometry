@@ -1,41 +1,25 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2cellunion.h"
 
-#include <math.h>
-#include <stdio.h>
 #include <algorithm>
+using std::min;
+using std::max;
+using std::swap;
+using std::reverse;
+
 #include <vector>
+using std::vector;
+
 
 #include "base/integral_types.h"
-#include <glog/logging.h>
-#include "base/stringprintf.h"
-#include "gtest/gtest.h"
-#include "s1angle.h"
-#include "s2cap.h"
-#include "s2cell.h"
+#include "base/logging.h"
+#include "testing/base/public/gunit.h"
 #include "s2cellid.h"
-#include "s2edgeutil.h"
-#include "s2regioncoverer.h"
+#include "s2cell.h"
+#include "s2cap.h"
 #include "s2testing.h"
-
-using std::max;
-using std::min;
-using std::vector;
+#include "s2regioncoverer.h"
 
 TEST(S2CellUnion, Basic) {
   S2CellUnion empty;
@@ -43,14 +27,14 @@ TEST(S2CellUnion, Basic) {
   empty.Init(ids);
   EXPECT_EQ(0, empty.num_cells());
 
-  S2CellId face1_id = S2CellId::FromFace(1);
+  S2CellId face1_id = S2CellId::FromFacePosLevel(1, 0, 0);
   S2CellUnion face1_union;
   ids.push_back(face1_id);
   face1_union.Init(ids);
   EXPECT_EQ(1, face1_union.num_cells());
   EXPECT_EQ(face1_id, face1_union.cell_id(0));
 
-  S2CellId face2_id = S2CellId::FromFace(2);
+  S2CellId face2_id = S2CellId::FromFacePosLevel(2, 0, 0);
   S2CellUnion face2_union;
   vector<uint64> cell_ids;
   cell_ids.push_back(face2_id.id());
@@ -66,7 +50,7 @@ TEST(S2CellUnion, Basic) {
 
 static S2Testing::Random& rnd = S2Testing::rnd;
 
-static void AddCells(S2CellId id, bool selected,
+static void AddCells(S2CellId const& id, bool selected,
                      vector<S2CellId> *input, vector<S2CellId> *expected) {
   // Decides whether to add "id" and/or some of its descendants to the
   // test case.  If "selected" is true, then the region covered by "id"
@@ -78,7 +62,7 @@ static void AddCells(S2CellId id, bool selected,
   if (id == S2CellId::None()) {
     // Initial call: decide whether to add cell(s) from each face.
     for (int face = 0; face < 6; ++face) {
-      AddCells(S2CellId::FromFace(face), false, input, expected);
+      AddCells(S2CellId::FromFacePosLevel(face, 0, 0), false, input, expected);
     }
     return;
   }
@@ -265,87 +249,68 @@ TEST(S2CellUnion, Normalize) {
   printf("avg in %.2f, avg out %.2f\n", in_sum / kIters, out_sum / kIters);
 }
 
-// Return the maximum geodesic distance from "axis" to any point of
-// "covering".
-static double GetRadius(S2CellUnion const& covering, S2Point const& axis) {
-  double max_dist = 0;
+static double GetMaxAngle(S2CellUnion const& covering, S2Point const& axis) {
+  double max_angle = 0;
   for (int i = 0; i < covering.num_cells(); ++i) {
     S2Cell cell(covering.cell_id(i));
-    for (int j = 0; j < 4; ++j) {
-      S2Point a = cell.GetVertex(j);
-      S2Point b = cell.GetVertex((j + 1) & 3);
-      double dist;
-      // The maximum distance is not always attained at a cell vertex: if at
-      // least one vertex is in the opposite hemisphere from "axis" then the
-      // maximum may be attained along an edge.  We solve this by computing
-      // the minimum distance from the edge to (-axis) instead.  We can't
-      // simply do this all the time because S2EdgeUtil::GetDistance() has
-      // poor accuracy when the result is close to Pi.
-      //
-      // TODO(ericv): Improve S2EdgeUtil::GetDistance() accuracy near Pi.
-      if (a.Angle(axis) > M_PI_2 || b.Angle(axis) > M_PI_2) {
-        dist = M_PI - S2EdgeUtil::GetDistance(-axis, a, b).radians();
-      } else {
-        dist = a.Angle(axis);
-      }
-      max_dist = max(max_dist, dist);
-    }
+    S2Cap cell_cap = cell.GetCapBound();
+    double angle = axis.Angle(cell_cap.axis()) + cell_cap.angle().radians();
+    max_angle = max(max_angle, angle);
   }
-  return max_dist;
+  return max_angle;
 }
 
 TEST(S2CellUnion, Expand) {
-  // This test generates coverings for caps of random sizes, expands
+  // This test generates coverings for caps of random sizes, and expands
   // the coverings by a random radius, and then make sure that the new
   // covering covers the expanded cap.  It also makes sure that the
   // new covering is not too much larger than expected.
 
   S2RegionCoverer coverer;
   for (int i = 0; i < 1000; ++i) {
-    SCOPED_TRACE(StringPrintf("Iteration %d", i));
     S2Cap cap = S2Testing::GetRandomCap(
         S2Cell::AverageArea(S2CellId::kMaxLevel), 4 * M_PI);
 
-    // Expand the cap area by a random factor whose log is uniformly
-    // distributed between 0 and log(1e2).
-    S2Cap expanded_cap = S2Cap::FromCenterHeight(
-        cap.center(), min(2.0, pow(1e2, rnd.RandDouble()) * cap.height()));
+    // Expand the cap by a random factor whose log is uniformly distributed
+    // between 0 and log(1e2).
+    S2Cap expanded_cap = S2Cap::FromAxisHeight(
+        cap.axis(), min(2.0, pow(1e2, rnd.RandDouble()) * cap.height()));
 
-    double radius = (expanded_cap.GetRadius() - cap.GetRadius()).radians();
+    double radius = expanded_cap.angle().radians() - cap.angle().radians();
     int max_level_diff = rnd.Uniform(8);
 
-    // Generate a covering for the original cap, and measure the maximum
-    // distance from the cap center to any point in the covering.
     S2CellUnion covering;
     coverer.set_max_cells(1 + rnd.Skewed(10));
     coverer.GetCellUnion(cap, &covering);
     S2Testing::CheckCovering(cap, covering, true);
-    double covering_radius = GetRadius(covering, cap.center());
 
-    // This code duplicates the logic in Expand(min_radius, max_level_diff)
-    // that figures out an appropriate cell level to use for the expansion.
+    double max_angle = GetMaxAngle(covering, cap.axis());
     int min_level = S2CellId::kMaxLevel;
     for (int i = 0; i < covering.num_cells(); ++i) {
       min_level = min(min_level, covering.cell_id(i).level());
     }
-    int expand_level = min(min_level + max_level_diff,
-                           S2::kMinWidth.GetMaxLevel(radius));
-
-    // Generate a covering for the expanded cap, and measure the new maximum
-    // distance from the cap center to any point in the covering.
     covering.Expand(S1Angle::Radians(radius), max_level_diff);
     S2Testing::CheckCovering(expanded_cap, covering, false);
-    double expanded_covering_radius = GetRadius(covering, cap.center());
+
+    int expand_level = min(min_level + max_level_diff,
+                           S2::kMinWidth.GetMaxLevel(radius));
+    double expanded_max_angle = GetMaxAngle(covering, cap.axis());
 
     // If the covering includes a tiny cell along the boundary, in theory the
-    // maximum angle of the covering from the cap center can increase by up to
-    // twice the maximum length of a cell diagonal.
-    EXPECT_LE(expanded_covering_radius - covering_radius,
-              2 * S2::kMaxDiag.GetValue(expand_level));
+    // maximum angle of the covering from the cap axis can increase by up to
+    // twice the maximum length of a cell diagonal.  We allow for an increase
+    // of slightly more than this because cell bounding caps are not exact.
+    EXPECT_LE(expanded_max_angle - max_angle,
+              2.02 * S2::kMaxDiag.GetValue(expand_level));
+    // TODO(user): This fails for some random seeds,
+    // e.g. initialize the random seed to 3 in s2testing.cc.  This
+    // means the assumption above is incorrect and needs to be
+    // revisited.
   }
 }
 
-static void TestInitFromRange(S2CellId min_id, S2CellId max_id) {
+static void TestInitFromRange(S2CellId const& min_id,
+                              S2CellId const& max_id) {
   S2CellUnion cell_union;
   cell_union.InitFromRange(min_id, max_id);
   vector<S2CellId> const& cell_ids = cell_union.cell_ids();
@@ -361,54 +326,27 @@ static void TestInitFromRange(S2CellId min_id, S2CellId max_id) {
 
 TEST(S2CellUnion, InitFromRange) {
   // Check the very first leaf cell and face cell.
-  S2CellId face1_id = S2CellId::FromFace(0);
+  S2CellId face1_id = S2CellId::FromFacePosLevel(0, 0, 0);
   TestInitFromRange(face1_id.range_min(), face1_id.range_min());
   TestInitFromRange(face1_id.range_min(), face1_id.range_max());
 
   // Check the very last leaf cell and face cell.
-  S2CellId face5_id = S2CellId::FromFace(5);
-  TestInitFromRange(face5_id.range_min(), face5_id.range_max());
-  TestInitFromRange(face5_id.range_max(), face5_id.range_max());
+  S2CellId face5_id = S2CellId::FromFacePosLevel(5, 0, 0);
+  TestInitFromRange(face1_id.range_min(), face1_id.range_max());
+  TestInitFromRange(face1_id.range_max(), face1_id.range_max());
 
   // Check random ranges of leaf cells.
-  for (int iter = 0; iter < 100; ++iter) {
+  for (int i = 0; i < 100; ++i) {
     S2CellId x = S2Testing::GetRandomCellId(S2CellId::kMaxLevel);
     S2CellId y = S2Testing::GetRandomCellId(S2CellId::kMaxLevel);
-    using std::swap;
     if (x > y) swap(x, y);
     TestInitFromRange(x, y);
   }
 }
 
-TEST(S2CellUnion, InitFromBeginEnd) {
-  // Since InitFromRange() is implemented in terms of InitFromBeginEnd(), we
-  // focus on test cases that generate an empty range.
-  vector<S2CellId> initial_ids(1, S2CellId::FromFace(3));
-  S2CellUnion cell_union;
-
-  // Test an empty range before the minimum S2CellId.
-  S2CellId id_begin = S2CellId::Begin(S2CellId::kMaxLevel);
-  cell_union.Init(initial_ids);
-  cell_union.InitFromBeginEnd(id_begin, id_begin);
-  EXPECT_EQ(0, cell_union.num_cells());
-
-  // Test an empty range after the maximum S2CellId.
-  S2CellId id_end = S2CellId::End(S2CellId::kMaxLevel);
-  cell_union.Init(initial_ids);
-  cell_union.InitFromBeginEnd(id_end, id_end);
-  EXPECT_EQ(0, cell_union.num_cells());
-
-  // Test the full sphere.
-  cell_union.InitFromBeginEnd(id_begin, id_end);
-  EXPECT_EQ(6, cell_union.num_cells());
-  for (int i = 0; i < cell_union.num_cells(); ++i) {
-    EXPECT_TRUE(cell_union.cell_id(i).is_face());
-  }
-}
-
 TEST(S2CellUnion, Empty) {
   S2CellUnion empty_cell_union;
-  S2CellId face1_id = S2CellId::FromFace(1);
+  S2CellId face1_id = S2CellId::FromFacePosLevel(1, 0, 0);
 
   // Normalize()
   empty_cell_union.Normalize();
@@ -455,7 +393,7 @@ TEST(S2CellUnion, Empty) {
 }
 
 TEST(S2CellUnion, Detach) {
-  S2CellId face1_id = S2CellId::FromFace(1);
+  S2CellId face1_id = S2CellId::FromFacePosLevel(1, 0, 0);
   S2CellUnion face1_union;
   vector<S2CellId> ids;
   ids.push_back(face1_id);
@@ -473,16 +411,20 @@ TEST(S2CellUnion, Detach) {
 
 TEST(S2CellUnion, LeafCellsCovered) {
   S2CellUnion cell_union;
+
+  // empty union
   EXPECT_EQ(0, cell_union.LeafCellsCovered());
 
+
   vector<S2CellId> ids;
-  // One leaf cell on face 0.
-  ids.push_back(S2CellId::FromFace(0).child_begin(S2CellId::kMaxLevel));
+  ids.push_back(S2CellId::FromFacePosLevel(
+      0, (1ULL << ((S2CellId::kMaxLevel << 1) - 1)), S2CellId::kMaxLevel));
+  // One leaf on face 0.
   cell_union.Init(ids);
   EXPECT_EQ(1ULL, cell_union.LeafCellsCovered());
 
-  // Face 0 itself (which includes the previous leaf cell).
-  ids.push_back(S2CellId::FromFace(0));
+  // Face 0.
+  ids.push_back(S2CellId::FromFacePosLevel(0, 0, 0));
   cell_union.Init(ids);
   EXPECT_EQ(1ULL << 60, cell_union.LeafCellsCovered());
   // Five faces.
@@ -493,13 +435,13 @@ TEST(S2CellUnion, LeafCellsCovered) {
   EXPECT_EQ(6ULL << 60, cell_union.LeafCellsCovered());
 
   // Add some disjoint cells.
-  ids.push_back(S2CellId::FromFace(1).child_begin(1));
-  ids.push_back(S2CellId::FromFace(2).child_begin(2));
-  ids.push_back(S2CellId::FromFace(2).child_end(2).prev());
-  ids.push_back(S2CellId::FromFace(3).child_begin(14));
-  ids.push_back(S2CellId::FromFace(4).child_begin(27));
-  ids.push_back(S2CellId::FromFace(4).child_end(15).prev());
-  ids.push_back(S2CellId::FromFace(5).child_begin(30));
+  ids.push_back(S2CellId::FromFacePosLevel(1, 0, 1));
+  ids.push_back(S2CellId::FromFacePosLevel(2, 0, 2));
+  ids.push_back(S2CellId::FromFacePosLevel(2, (1ULL << 60), 2));
+  ids.push_back(S2CellId::FromFacePosLevel(3, 0, 14));
+  ids.push_back(S2CellId::FromFacePosLevel(4, (1ULL << 60), 15));
+  ids.push_back(S2CellId::FromFacePosLevel(4, 0, 27));
+  ids.push_back(S2CellId::FromFacePosLevel(5, 0, 30));
   cell_union.Init(ids);
   uint64 expected = 1ULL + (1ULL << 6) + (1ULL << 30) + (1ULL << 32) +
       (2ULL << 56) + (1ULL << 58) + (1ULL << 60);

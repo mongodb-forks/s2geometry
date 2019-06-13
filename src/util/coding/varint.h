@@ -1,17 +1,4 @@
-// Copyright 2001 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+// Copyright 2001 and onwards Google Inc.
 //
 // Raw support for varint encoding.  Higher level interfaces are
 // provided by Encoder/Decoder/IOBuffer.  Clients should typically use
@@ -26,27 +13,20 @@
 //      vi_encode32_unchecked
 //      vi_encode64_unchecked
 
-#ifndef UTIL_CODING_VARINT_H_
-#define UTIL_CODING_VARINT_H_
+#ifndef _VARINT_H
+#define _VARINT_H
 
-// Avoid adding expensive includes here.
-#include <assert.h>
-#include <stddef.h>
 #include <string>
+using std::string;
 
-#include "base/integral_types.h"
-#include "base/port.h"
-#include "util/bits/bits.h"
+#include "base/basictypes.h"
 
 // Just a namespace, not a real class
 class Varint {
  public:
   // Maximum lengths of varint encoding of uint32 and uint64
-  static const int kMax32 = 5;
-  static const int kMax64 = 10;
-
-  // The decoder does not read past the end of the encoded data.
-  static const int kSlopBytes = 0;
+  static const int kMax32; // = 5;
+  static const int kMax64;  // = 10;
 
   // REQUIRES   "ptr" points to a buffer of length at least kMaxXX
   // EFFECTS    Scan next varint from "ptr" and store in OUTPUT.
@@ -165,9 +145,7 @@ class Varint {
   static void Append64Slow(string* s, uint64 value);
 
   // Mapping from rightmost bit set to the number of bytes required
-  // bit positions count from 1 to bit-size of a word.  Entry 0 is
-  // for the case when input is 0.
-  static const char kLengthBytesRequired[65];
+  static const char length32_bytes_required[33];
 };
 
 /***** Implementation details; clients should ignore *****/
@@ -393,21 +371,63 @@ inline const char* Varint::DecodeTwo32Values(const char* p,
   }
 }
 
+#if (defined __i386__ || defined __x86_64__) && defined __GNUC__
 inline int Varint::Length32(uint32 v) {
-  // On x86, subtraction below is eliminated together with another subtraction
-  // in Bits::CountLeadingZeros32() by a compiler so the criical path is 2
-  // instructions (a bsr followed by a cmovz).  On POWER and aarch64, the
-  // subtraction costs us one extra instruction but clz can be done with one
-  // instruction on those platforms.
-  const int leading_zeros = Bits::CountLeadingZeros32(v);
-  return Varint::kLengthBytesRequired[32-leading_zeros];
+  // Find the rightmost bit set, and index into a small table
+
+  // "ro" for the input spec means the input can come from either a
+  // register ("r") or offsetable memory ("o").
+  //
+  // If "n == 0", the "bsr" instruction sets the "Z" flag, so we
+  // conditionally move "-1" into the result.
+  //
+  // Note: the cmovz was introduced on PIII's, and may not work on
+  // older machines.
+  int bits;
+  const int neg1 = -1;
+  __asm__("bsr   %1, %0\n\t"
+          "cmovz %2, %0"
+          : "=&r" (bits)               // Output spec, early clobber
+          : "ro" (v), "r" (neg1)        // Input spec
+          : "cc"                        // Clobbers condition-codes
+          );
+  return Varint::length32_bytes_required[bits+1];
 }
 
-inline int Varint::Length64(uint64 v) {
-  const int leading_zeros = Bits::CountLeadingZeros64(v);
-  return Varint::kLengthBytesRequired[64-leading_zeros];
-}
+#else
+inline int Varint::Length32(uint32 v) {
+  /*
+    The following version is about 1.5X the code size, but is faster than
+    the loop below.
 
+  if (v < (1u << 14)) {
+    if (v < (1u << 7)) {
+      return 1;
+    } else {
+      return 2;
+    }
+  } else {
+    if (v < (1u << 28)) {
+      if (v < (1u << 21)) {
+        return 3;
+      } else {
+        return 4;
+      }
+    } else {
+      return 5;
+    }
+  }
+  */
+
+  // Each byte of output stores 7 bits of "v" until "v" becomes zero
+  int nbytes = 0;
+  do {
+    nbytes++;
+    v >>= 7;
+  } while (v != 0);
+  return nbytes;
+}
+#endif
 
 inline void Varint::Append32(string* s, uint32 value) {
   // Inline the fast-path for single-character output, but fall back to the .cc
@@ -485,4 +505,4 @@ inline const char* Varint::FastDecodeDeltas(const char* ptr,
   return ptr;
 }
 
-#endif  // UTIL_CODING_VARINT_H_
+#endif /* _VARINT_H */

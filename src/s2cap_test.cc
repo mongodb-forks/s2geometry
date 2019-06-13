@@ -1,31 +1,14 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2cap.h"
 
-#include "gtest/gtest.h"
-#include "r1interval.h"
-#include "s1interval.h"
+#include "base/commandlineflags.h"
+#include "base/logging.h"
+#include "testing/base/public/gunit.h"
 #include "s2.h"
 #include "s2cell.h"
-#include "s2cellid.h"
 #include "s2latlng.h"
 #include "s2latlngrect.h"
-#include "s2testing.h"
-#include "util/math/vector3.h"
 
 static S2Point GetLatLngPoint(double lat_degrees, double lng_degrees) {
   return S2LatLng::FromDegrees(lat_degrees, lng_degrees).ToPoint();
@@ -45,13 +28,13 @@ TEST(S2Cap, Basic) {
   EXPECT_TRUE(full.is_full());
   EXPECT_TRUE(full.Complement().is_empty());
   EXPECT_EQ(2, full.height());
-  EXPECT_DOUBLE_EQ(180.0, full.GetRadius().degrees());
+  EXPECT_DOUBLE_EQ(180.0, full.angle().degrees());
 
   // Check that the default S2Cap is identical to Empty().
   S2Cap default_empty;
   EXPECT_TRUE(default_empty.is_valid());
   EXPECT_TRUE(default_empty.is_empty());
-  EXPECT_EQ(empty.center(), default_empty.center());
+  EXPECT_EQ(empty.axis(), default_empty.axis());
   EXPECT_EQ(empty.height(), default_empty.height());
 
   // Containment and intersection of empty and full caps.
@@ -63,41 +46,42 @@ TEST(S2Cap, Basic) {
   EXPECT_FALSE(full.InteriorIntersects(empty));
 
   // Singleton cap containing the x-axis.
-  S2Cap xaxis = S2Cap::FromPoint(S2Point(1, 0, 0));
+  S2Cap xaxis = S2Cap::FromAxisHeight(S2Point(1, 0, 0), 0);
   EXPECT_TRUE(xaxis.Contains(S2Point(1, 0, 0)));
   EXPECT_TRUE(xaxis.VirtualContainsPoint(S2Point(1, 0, 0)));
   EXPECT_FALSE(xaxis.Contains(S2Point(1, 1e-20, 0)));
   EXPECT_FALSE(xaxis.VirtualContainsPoint(S2Point(1, 1e-20, 0)));
-  EXPECT_EQ(0, xaxis.GetRadius().radians());
+  EXPECT_EQ(0, xaxis.angle().radians());
 
   // Singleton cap containing the y-axis.
-  S2Cap yaxis = S2Cap::FromPoint(S2Point(0, 1, 0));
-  EXPECT_FALSE(yaxis.Contains(xaxis.center()));
+  S2Cap yaxis = S2Cap::FromAxisAngle(S2Point(0, 1, 0), S1Angle::Radians(0));
+  EXPECT_FALSE(yaxis.Contains(xaxis.axis()));
   EXPECT_EQ(0, xaxis.height());
 
   // Check that the complement of a singleton cap is the full cap.
   S2Cap xcomp = xaxis.Complement();
   EXPECT_TRUE(xcomp.is_valid());
   EXPECT_TRUE(xcomp.is_full());
-  EXPECT_TRUE(xcomp.Contains(xaxis.center()));
+  EXPECT_TRUE(xcomp.Contains(xaxis.axis()));
 
   // Check that the complement of the complement is *not* the original.
   EXPECT_TRUE(xcomp.Complement().is_valid());
   EXPECT_TRUE(xcomp.Complement().is_empty());
-  EXPECT_FALSE(xcomp.Complement().Contains(xaxis.center()));
+  EXPECT_FALSE(xcomp.Complement().Contains(xaxis.axis()));
 
   // Check that very small caps can be represented accurately.
   // Here "kTinyRad" is small enough that unit vectors perturbed by this
   // amount along a tangent do not need to be renormalized.
   static const double kTinyRad = 1e-10;
-  S2Cap tiny(S2Point(1, 2, 3).Normalize(), S1Angle::Radians(kTinyRad));
-  Vector3_d tangent = tiny.center().CrossProd(S2Point(3, 2, 1)).Normalize();
-  EXPECT_TRUE(tiny.Contains(tiny.center() + 0.99 * kTinyRad * tangent));
-  EXPECT_FALSE(tiny.Contains(tiny.center() + 1.01 * kTinyRad * tangent));
+  S2Cap tiny = S2Cap::FromAxisAngle(S2Point(1, 2, 3).Normalize(),
+                                    S1Angle::Radians(kTinyRad));
+  S2Point tangent = tiny.axis().CrossProd(S2Point(3, 2, 1)).Normalize();
+  EXPECT_TRUE(tiny.Contains(tiny.axis() + 0.99 * kTinyRad * tangent));
+  EXPECT_FALSE(tiny.Contains(tiny.axis() + 1.01 * kTinyRad * tangent));
 
   // Basic tests on a hemispherical cap.
-  S2Cap hemi = S2Cap::FromCenterHeight(S2Point(1, 0, 1).Normalize(), 1);
-  EXPECT_EQ(-hemi.center(), S2Point(hemi.Complement().center()));
+  S2Cap hemi = S2Cap::FromAxisHeight(S2Point(1, 0, 1).Normalize(), 1);
+  EXPECT_EQ(-hemi.axis(), S2Point(hemi.Complement().axis()));
   EXPECT_EQ(1, hemi.Complement().height());
   EXPECT_TRUE(hemi.Contains(S2Point(1, 0, 0)));
   EXPECT_FALSE(hemi.Complement().Contains(S2Point(1, 0, 0)));
@@ -105,7 +89,8 @@ TEST(S2Cap, Basic) {
   EXPECT_FALSE(hemi.InteriorContains(S2Point(1, 0, -(1+kEps)).Normalize()));
 
   // A concave cap.
-  S2Cap concave(GetLatLngPoint(80, 10), S1Angle::Degrees(150));
+  S2Cap concave = S2Cap::FromAxisAngle(GetLatLngPoint(80, 10),
+                                       S1Angle::Degrees(150));
   EXPECT_TRUE(concave.Contains(GetLatLngPoint(-70 * (1 - kEps), 10)));
   EXPECT_FALSE(concave.Contains(GetLatLngPoint(-70 * (1 + kEps), 10)));
   EXPECT_TRUE(concave.Contains(GetLatLngPoint(-50 * (1 - kEps), -170)));
@@ -124,13 +109,14 @@ TEST(S2Cap, Basic) {
   EXPECT_FALSE(xaxis.InteriorIntersects(empty));
   EXPECT_TRUE(hemi.Contains(tiny));
   EXPECT_TRUE(hemi.Contains(
-      S2Cap(S2Point(1, 0, 0), S1Angle::Radians(M_PI_4 - kEps))));
+                  S2Cap::FromAxisAngle(S2Point(1, 0, 0),
+                                       S1Angle::Radians(M_PI_4 - kEps))));
   EXPECT_FALSE(hemi.Contains(
-      S2Cap(S2Point(1, 0, 0), S1Angle::Radians(M_PI_4 + kEps))));
+                   S2Cap::FromAxisAngle(S2Point(1, 0, 0),
+                                        S1Angle::Radians(M_PI_4 + kEps))));
   EXPECT_TRUE(concave.Contains(hemi));
   EXPECT_TRUE(concave.InteriorIntersects(hemi.Complement()));
-  EXPECT_FALSE(concave.Contains(
-      S2Cap::FromCenterHeight(-concave.center(), 0.1)));
+  EXPECT_FALSE(concave.Contains(S2Cap::FromAxisHeight(-concave.axis(), 0.1)));
 }
 
 TEST(S2Cap, GetRectBound) {
@@ -143,41 +129,43 @@ TEST(S2Cap, GetRectBound) {
   // degrees.  (EXPECT_DOUBLE_EQ isn't sufficient.)
 
   // Cap that includes the south pole.
-  S2LatLngRect rect = S2Cap(GetLatLngPoint(-45, 57),
-                            S1Angle::Degrees(50)).GetRectBound();
+  S2LatLngRect rect = S2Cap::FromAxisAngle(GetLatLngPoint(-45, 57),
+                                           S1Angle::Degrees(50)).GetRectBound();
   EXPECT_NEAR(rect.lat_lo().degrees(), -90, kDegreeEps);
   EXPECT_NEAR(rect.lat_hi().degrees(), 5, kDegreeEps);
   EXPECT_TRUE(rect.lng().is_full());
 
   // Cap that is tangent to the north pole.
-  rect = S2Cap(S2Point(1, 0, 1).Normalize(),
-               S1Angle::Radians(M_PI_4 + 1e-16)).GetRectBound();
+  rect = S2Cap::FromAxisAngle(S2Point(1, 0, 1).Normalize(),
+                              S1Angle::Radians(M_PI_4 + 1e-16)).GetRectBound();
   EXPECT_NEAR(rect.lat().lo(), 0, kEps);
   EXPECT_NEAR(rect.lat().hi(), M_PI_2, kEps);
   EXPECT_TRUE(rect.lng().is_full());
 
-  rect = S2Cap(S2Point(1, 0, 1).Normalize(),
-               S1Angle::Degrees(45 + 5e-15)).GetRectBound();
+  rect = S2Cap::FromAxisAngle(S2Point(1, 0, 1).Normalize(),
+                              S1Angle::Degrees(45 + 5e-15)).GetRectBound();
   EXPECT_NEAR(rect.lat_lo().degrees(), 0, kDegreeEps);
   EXPECT_NEAR(rect.lat_hi().degrees(), 90, kDegreeEps);
   EXPECT_TRUE(rect.lng().is_full());
 
   // The eastern hemisphere.
-  rect = S2Cap(S2Point(0, 1, 0),
-               S1Angle::Radians(M_PI_2 + 2e-16)).GetRectBound();
+  rect = S2Cap::FromAxisAngle(S2Point(0, 1, 0),
+                              S1Angle::Radians(M_PI_2 + 2e-16)).GetRectBound();
   EXPECT_NEAR(rect.lat_lo().degrees(), -90, kDegreeEps);
   EXPECT_NEAR(rect.lat_hi().degrees(), 90, kDegreeEps);
   EXPECT_TRUE(rect.lng().is_full());
 
   // A cap centered on the equator.
-  rect = S2Cap(GetLatLngPoint(0, 50), S1Angle::Degrees(20)).GetRectBound();
+  rect = S2Cap::FromAxisAngle(GetLatLngPoint(0, 50),
+                              S1Angle::Degrees(20)).GetRectBound();
   EXPECT_NEAR(rect.lat_lo().degrees(), -20, kDegreeEps);
   EXPECT_NEAR(rect.lat_hi().degrees(), 20, kDegreeEps);
   EXPECT_NEAR(rect.lng_lo().degrees(), 30, kDegreeEps);
   EXPECT_NEAR(rect.lng_hi().degrees(), 70, kDegreeEps);
 
   // A cap centered on the north pole.
-  rect = S2Cap(GetLatLngPoint(90, 123), S1Angle::Degrees(10)).GetRectBound();
+  rect = S2Cap::FromAxisAngle(GetLatLngPoint(90, 123),
+                              S1Angle::Degrees(10)).GetRectBound();
   EXPECT_NEAR(rect.lat_lo().degrees(), 80, kDegreeEps);
   EXPECT_NEAR(rect.lat_hi().degrees(), 90, kDegreeEps);
   EXPECT_TRUE(rect.lng().is_full());
@@ -193,7 +181,7 @@ TEST(S2Cap, S2CellMethods) {
 
   for (int face = 0; face < 6; ++face) {
     // The cell consisting of the entire face.
-    S2Cell root_cell = S2Cell::FromFace(face);
+    S2Cell root_cell = S2Cell::FromFacePosLevel(face, 0, 0);
 
     // A leaf cell at the midpoint of the v=1 edge.
     S2Cell edge_cell(S2::FaceUVtoXYZ(face, 0, 1 - kEps));
@@ -222,7 +210,8 @@ TEST(S2Cap, S2CellMethods) {
     for (int cap_face = 0; cap_face < 6; ++cap_face) {
       // A cap that barely contains all of 'cap_face'.
       S2Point center = S2::GetNorm(cap_face);
-      S2Cap covering(center, S1Angle::Radians(kFaceRadius + kEps));
+      S2Cap covering = S2Cap::FromAxisAngle(
+          center, S1Angle::Radians(kFaceRadius + kEps));
       EXPECT_EQ(cap_face == face, covering.Contains(root_cell));
       EXPECT_EQ(cap_face != anti_face, covering.MayIntersect(root_cell));
       EXPECT_EQ(center.DotProd(edge_cell.GetCenter()) > 0.1,
@@ -233,7 +222,8 @@ TEST(S2Cap, S2CellMethods) {
                 covering.MayIntersect(corner_cell));
 
       // A cap that barely intersects the edges of 'cap_face'.
-      S2Cap bulging(center, S1Angle::Radians(M_PI_4 + kEps));
+      S2Cap bulging = S2Cap::FromAxisAngle(
+          center, S1Angle::Radians(M_PI_4 + kEps));
       EXPECT_FALSE(bulging.Contains(root_cell));
       EXPECT_EQ(cap_face != anti_face, bulging.MayIntersect(root_cell));
       EXPECT_EQ(cap_face == face, bulging.Contains(edge_cell));
@@ -243,7 +233,7 @@ TEST(S2Cap, S2CellMethods) {
       EXPECT_FALSE(bulging.MayIntersect(corner_cell));
 
       // A singleton cap.
-      S2Cap singleton(center, S1Angle::Zero());
+      S2Cap singleton = S2Cap::FromAxisAngle(center, S1Angle::Radians(0));
       EXPECT_EQ(cap_face == face, singleton.MayIntersect(root_cell));
       EXPECT_FALSE(singleton.MayIntersect(edge_cell));
       EXPECT_FALSE(singleton.MayIntersect(corner_cell));
@@ -254,74 +244,10 @@ TEST(S2Cap, S2CellMethods) {
 TEST(S2Cap, Expanded) {
   EXPECT_TRUE(S2Cap::Empty().Expanded(S1Angle::Radians(2)).is_empty());
   EXPECT_TRUE(S2Cap::Full().Expanded(S1Angle::Radians(2)).is_full());
-  S2Cap cap50(S2Point(1, 0, 0), S1Angle::Degrees(50));
-  S2Cap cap51(S2Point(1, 0, 0), S1Angle::Degrees(51));
+  S2Cap cap50 = S2Cap::FromAxisAngle(S2Point(1, 0, 0), S1Angle::Degrees(50));
+  S2Cap cap51 = S2Cap::FromAxisAngle(S2Point(1, 0, 0), S1Angle::Degrees(51));
   EXPECT_TRUE(cap50.Expanded(S1Angle::Radians(0)).ApproxEquals(cap50));
   EXPECT_TRUE(cap50.Expanded(S1Angle::Degrees(1)).ApproxEquals(cap51));
   EXPECT_FALSE(cap50.Expanded(S1Angle::Degrees(129.99)).is_full());
   EXPECT_TRUE(cap50.Expanded(S1Angle::Degrees(130.01)).is_full());
-}
-
-TEST(S2Cap, GetCentroid) {
-  // Empty and full caps.
-  EXPECT_EQ(S2Point(), S2Cap::Empty().GetCentroid());
-  EXPECT_LE(S2Cap::Full().GetCentroid().Norm(), 1e-15);
-
-  // Random caps.
-  for (int i = 0; i < 100; ++i) {
-    S2Point center = S2Testing::RandomPoint();
-    double height = S2Testing::rnd.UniformDouble(0.0, 2.0);
-    S2Cap cap = S2Cap::FromCenterHeight(center, height);
-    S2Point centroid = cap.GetCentroid();
-    S2Point expected = center * (1.0 - height / 2.0) * cap.GetArea();
-    EXPECT_LE((expected - centroid).Norm(), 1e-15);
-  }
-}
-
-TEST(S2Cap, Union) {
-  // Two caps which have the same center but one has a larger radius.
-  S2Cap a = S2Cap(GetLatLngPoint(50.0, 10.0), S1Angle::Degrees(0.2));
-  S2Cap b = S2Cap(GetLatLngPoint(50.0, 10.0), S1Angle::Degrees(0.3));
-  EXPECT_TRUE(b.Contains(a));
-  EXPECT_EQ(b, a.Union(b));
-
-  // Two caps where one is the full cap.
-  EXPECT_TRUE(a.Union(S2Cap::Full()).is_full());
-
-  // Two caps where one is the empty cap.
-  EXPECT_EQ(a, a.Union(S2Cap::Empty()));
-
-  // Two caps which have different centers, one entirely encompasses the other.
-  S2Cap c = S2Cap(GetLatLngPoint(51.0, 11.0), S1Angle::Degrees(1.5));
-  EXPECT_TRUE(c.Contains(a));
-  EXPECT_EQ(a.Union(c).center(), c.center());
-  EXPECT_EQ(a.Union(c).GetRadius(), c.GetRadius());
-
-  // Two entirely disjoint caps.
-  S2Cap d = S2Cap(GetLatLngPoint(51.0, 11.0), S1Angle::Degrees(0.1));
-  EXPECT_FALSE(d.Contains(a));
-  EXPECT_FALSE(d.Intersects(a));
-  EXPECT_TRUE(a.Union(d).ApproxEquals(d.Union(a)));
-  EXPECT_NEAR(50.4588, S2LatLng(a.Union(d).center()).lat().degrees(), 0.001);
-  EXPECT_NEAR(10.4525, S2LatLng(a.Union(d).center()).lng().degrees(), 0.001);
-  EXPECT_NEAR(0.7425, a.Union(d).GetRadius().degrees(), 0.001);
-
-  // Two partially overlapping caps.
-  S2Cap e = S2Cap(GetLatLngPoint(50.3, 10.3), S1Angle::Degrees(0.2));
-  EXPECT_FALSE(e.Contains(a));
-  EXPECT_TRUE(e.Intersects(a));
-  EXPECT_TRUE(a.Union(e).ApproxEquals(e.Union(a)));
-  EXPECT_NEAR(50.1500, S2LatLng(a.Union(e).center()).lat().degrees(), 0.001);
-  EXPECT_NEAR(10.1495, S2LatLng(a.Union(e).center()).lng().degrees(), 0.001);
-  EXPECT_NEAR(0.3781, a.Union(e).GetRadius().degrees(), 0.001);
-
-  // Two very large caps, whose radius sums to in excess of 180 degrees, and
-  // whose centers are not antipodal.
-  S2Cap f = S2Cap(S2Point(0, 0, 1).Normalize(), S1Angle::Degrees(150));
-  S2Cap g = S2Cap(S2Point(0, 1, 0).Normalize(), S1Angle::Degrees(150));
-  EXPECT_TRUE(f.Union(g).is_full());
-
-  // Two non-overlapping hemisphere caps with antipodal centers.
-  S2Cap hemi = S2Cap::FromCenterHeight(S2Point(0, 0, 1).Normalize(), 1);
-  EXPECT_TRUE(hemi.Union(hemi.Complement()).is_full());
 }

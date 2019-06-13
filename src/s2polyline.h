@@ -1,36 +1,18 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2POLYLINE_H__
 #define UTIL_GEOMETRY_S2POLYLINE_H__
 
 #include <vector>
+using std::vector;
 
-#include <glog/logging.h>
+#include "base/logging.h"
 #include "base/macros.h"
 #include "s2.h"
-#include "s2latlngrect.h"
 #include "s2region.h"
+#include "s2latlngrect.h"
 
-class Decoder;
-class Encoder;
 class S1Angle;
-class S2Cap;
-class S2Cell;
-class S2LatLng;
 
 // An S2Polyline represents a sequence of zero or more vertices connected by
 // straight edges (geodesics).  Edges of length 0 and 180 degrees are not
@@ -42,61 +24,27 @@ class S2Polyline : public S2Region {
   S2Polyline();
 
   // Convenience constructors that call Init() with the given vertices.
-  S2Polyline(std::vector<S2Point> const& vertices);
-  S2Polyline(std::vector<S2LatLng> const& vertices);
-
-  // Convenience constructors to disable the automatic validity checking
-  // controlled by the --s2debug flag.  Example:
-  //
-  //   S2Polyline* line = new S2Polyline(vertices, DISABLE_S2DEBUG);
-  //
-  // This is equivalent to:
-  //
-  //   S2Polyline* line = new S2Polyline;
-  //   line->set_s2debug_override(DISABLE_S2DEBUG);
-  //   line->Init(vertices);
-  //
-  // The main reason to use this constructors is if you intend to call
-  // IsValid() explicitly.  See set_s2debug_override() for details.
-  S2Polyline(std::vector<S2Point> const& vertices, S2debugOverride override);
-  S2Polyline(std::vector<S2LatLng> const& vertices, S2debugOverride override);
+  S2Polyline(vector<S2Point> const& vertices);
+  S2Polyline(vector<S2LatLng> const& vertices);
 
   // Initialize a polyline that connects the given vertices. Empty polylines are
   // allowed.  Adjacent vertices should not be identical or antipodal.  All
   // vertices should be unit length.
-  // TODO(user): Fix s2.swig and update to std::vector.
-  void Init(std::vector<S2Point> const& vertices);
+  void Init(vector<S2Point> const& vertices);
 
   // Convenience initialization function that accepts latitude-longitude
   // coordinates rather than S2Points.
-  // TODO(user): Fix s2.swig and update to std::vector.
-  void Init(std::vector<S2LatLng> const& vertices);
+  void Init(vector<S2LatLng> const& vertices);
 
   ~S2Polyline();
 
-  // Allows overriding the automatic validity checks controlled by the
-  // --s2debug flag.  If this flag is true, then polylines are automatically
-  // checked for validity as they are initialized.  The main reason to disable
-  // this flag is if you intend to call IsValid() explicitly, like this:
-  //
-  //   S2Polyline line;
-  //   line.set_s2debug_override(DISABLE_S2DEBUG);
-  //   line.Init(...);
-  //   if (!line.IsValid()) { ... }
-  //
-  // Without the call to set_s2debug_override(), invalid data would cause a
-  // fatal error in Init() whenever the --s2debug flag is enabled.
-  void set_s2debug_override(S2debugOverride override);
-  S2debugOverride s2debug_override() const;
-
   // Return true if the given vertices form a valid polyline.
-  bool IsValid() const;
-  static bool IsValid(std::vector<S2Point> const& vertices);
+  // Output errors to "err" if it's not NULL.
+  static bool IsValid(vector<S2Point> const& vertices, string* err = NULL);
 
   int num_vertices() const { return num_vertices_; }
   S2Point const& vertex(int k) const {
     DCHECK_GE(k, 0);
-    DCHECK_LT(k, num_vertices_);
     return vertices_[k];
   }
 
@@ -175,9 +123,7 @@ class S2Polyline : public S2Region {
 
   // Return a subsequence of vertex indices such that the polyline connecting
   // these vertices is never further than "tolerance" from the original
-  // polyline.  Provided the first and last vertices are distinct, they are
-  // always preserved; if they are not, the subsequence may contain only a
-  // single index.
+  // polyline.  The first and last vertices are always preserved.
   //
   // Some useful properties of the algorithm:
   //
@@ -195,7 +141,7 @@ class S2Polyline : public S2Region {
   //    (to within the given tolerance).  This is different than the
   //    Douglas-Peucker algorithm used in maps/util/geoutil-inl.h, which only
   //    guarantees geometric equivalence.
-  void SubsampleVertices(S1Angle tolerance, std::vector<int>* indices) const;
+  void SubsampleVertices(S1Angle const& tolerance, vector<int>* indices) const;
 
   // Return true if two polylines have the same number of vertices, and
   // corresponding vertex pairs are separated by no more than "max_error".
@@ -213,7 +159,7 @@ class S2Polyline : public S2Region {
   // car ever goes backward, and the cars are always within "max_error" of each
   // other.
   bool NearlyCoversPolyline(S2Polyline const& covered,
-                            S1Angle max_error) const;
+                            S1Angle const& max_error) const;
 
   ////////////////////////////////////////////////////////////////////////
   // S2Region interface (see s2region.h for details):
@@ -236,20 +182,13 @@ class S2Polyline : public S2Region {
   // its argument.
   S2Polyline(S2Polyline const* src);
 
-  // Return true if the given vertices form a valid polyline.
-  static bool IsValid(S2Point const* vertices, int num_vertices);
-
-  // Allows overriding the automatic validity checking controlled by the
-  // --s2debug flag.
-  uint8 s2debug_override_;  // Store enum in 1 byte rather than 4.
-
   // We store the vertices in an array rather than a vector because we don't
   // need any STL methods, and computing the number of vertices using size()
   // would be relatively expensive (due to division by sizeof(S2Point) == 24).
   int num_vertices_;
   S2Point* vertices_;
 
-  DISALLOW_COPY_AND_ASSIGN(S2Polyline);
+  DISALLOW_EVIL_CONSTRUCTORS(S2Polyline);
 };
 
 #endif  // UTIL_GEOMETRY_S2POLYLINE_H__

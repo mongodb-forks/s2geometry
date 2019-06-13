@@ -1,37 +1,21 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2polyline.h"
 
-#include <math.h>
-#include <string>
 #include <vector>
+using std::vector;
 
-#include <gflags/gflags.h>
+
+#include "base/commandlineflags.h"
 #include "base/scoped_ptr.h"
 #include "base/stringprintf.h"
-#include "gtest/gtest.h"
+#include "testing/base/public/gunit.h"
 #include "util/coding/coder.h"
-#include "s1angle.h"
-#include "s2.h"
 #include "s2cell.h"
 #include "s2latlng.h"
 #include "s2testing.h"
 
-using std::vector;
+DECLARE_bool(s2debug);
 
 namespace {
 
@@ -71,7 +55,7 @@ TEST(S2Polyline, GetLengthAndCentroid) {
 
   for (int i = 0; i < 100; ++i) {
     // Choose a coordinate frame for the great circle.
-    Vector3_d x, y, z;
+    S2Point x, y, z;
     S2Testing::GetRandomFrame(&x, &y, &z);
 
     vector<S2Point> vertices;
@@ -97,7 +81,7 @@ TEST(S2Polyline, MayIntersect) {
   vertices.push_back(S2Point(1, -0.8, 1.1).Normalize());
   S2Polyline line(vertices);
   for (int face = 0; face < 6; ++face) {
-    S2Cell cell = S2Cell::FromFace(face);
+    S2Cell cell = S2Cell::FromFacePosLevel(face, 0, 0);
     EXPECT_EQ((face & 1) == 0, line.MayIntersect(cell));
   }
 }
@@ -320,8 +304,9 @@ TEST(S2Polyline, SubsampleVerticesTrivialInputs) {
 
   // And finally, verify that we still do something reasonable if the client
   // passes in an invalid polyline with two or more adjacent vertices.
-  FLAGS_s2debug = false;  // Restored by gUnit
+  FLAGS_s2debug = false;
   CheckSubsample("0:1, 0:1, 0:1, 0:2", 0.0, "0,3");
+  FLAGS_s2debug = true;
 }
 
 TEST(S2Polyline, SubsampleVerticesSimpleExample) {
@@ -453,7 +438,7 @@ TEST(S2PolylineCoveringTest, IsResilientToDuplicatePoints) {
   // S2Polyines are not generally supposed to contain adjacent, identical
   // points, but it happens in practice.  When --s2debug=true, debug-mode
   // binaries abort on such polylines, so we also set --s2debug=false.
-  FLAGS_s2debug = false;  // Restored by gUnit
+  FLAGS_s2debug = false;
   TestNearlyCovers("0:1, 0:2, 0:2, 0:3", "0:1, 0:1, 0:1, 0:3",
                    1e-10, true, true);
 }

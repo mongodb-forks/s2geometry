@@ -1,35 +1,22 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
+
+#include <algorithm>
+using std::min;
+using std::max;
+using std::swap;
+using std::reverse;
+
 
 #include "s2latlngrect.h"
 
-#include <algorithm>
-#include <iosfwd>
-#include <iostream>
-
-#include <glog/logging.h>
+#include "base/logging.h"
 #include "util/coding/coder.h"
 #include "s2cap.h"
 #include "s2cell.h"
 #include "s2edgeutil.h"
+#include "util/math/mathutil.h"
 
-using std::max;
-using std::min;
-
-static const unsigned char kCurrentLosslessEncodingVersionNumber = 1;
+static const unsigned char kCurrentEncodingVersionNumber = 1;
 
 S2LatLngRect S2LatLngRect::FromCenterSize(S2LatLng const& center,
                                           S2LatLng const& size) {
@@ -37,20 +24,14 @@ S2LatLngRect S2LatLngRect::FromCenterSize(S2LatLng const& center,
 }
 
 S2LatLngRect S2LatLngRect::FromPoint(S2LatLng const& p) {
-  DLOG_IF(ERROR, !p.is_valid())
-      << "Invalid S2LatLng in S2LatLngRect::GetDistance: " << p;
-
+  DCHECK(p.is_valid());
   return S2LatLngRect(p, p);
 }
 
 S2LatLngRect S2LatLngRect::FromPointPair(S2LatLng const& p1,
                                          S2LatLng const& p2) {
-  DLOG_IF(ERROR, !p1.is_valid())
-      << "Invalid S2LatLng in S2LatLngRect::FromPointPair: " << p1;
-
-  DLOG_IF(ERROR, !p2.is_valid())
-      << "Invalid S2LatLng in S2LatLngRect::FromPointPair: " << p2;
-
+  DCHECK(p1.is_valid()) << p1;
+  DCHECK(p2.is_valid()) << p2;
   return S2LatLngRect(R1Interval::FromPointPair(p1.lat().radians(),
                                                 p2.lat().radians()),
                       S1Interval::FromPointPair(p1.lng().radians(),
@@ -62,9 +43,8 @@ S2LatLngRect* S2LatLngRect::Clone() const {
 }
 
 S2LatLng S2LatLngRect::GetVertex(int k) const {
-  // Twiddle bits to return the points in CCW order (lower left, lower right,
-  // upper right, upper left).
-  return S2LatLng::FromRadians(lat_[k>>1], lng_[(k>>1) ^ (k&1)]);
+  // Twiddle bits to return the points in CCW order (SW, SE, NE, NW).
+  return S2LatLng::FromRadians(lat_.bound(k>>1), lng_.bound((k>>1) ^ (k&1)));
 }
 
 S2LatLng S2LatLngRect::GetCenter() const {
@@ -79,63 +59,12 @@ double S2LatLngRect::Area() const {
   if (is_empty()) return 0.0;
   // This is the size difference of the two spherical caps, multiplied by
   // the longitude ratio.
-  return lng().GetLength() * (sin(lat_hi()) - sin(lat_lo()));
-}
-
-S2Point S2LatLngRect::GetCentroid() const {
-  // When a sphere is divided into slices of constant thickness by a set of
-  // parallel planes, all slices have the same surface area.  This implies
-  // that the z-component of the centroid is simply the midpoint of the
-  // z-interval spanned by the S2LatLngRect.
-  //
-  // Similarly, it is easy to see that the (x,y) of the centroid lies in the
-  // plane through the midpoint of the rectangle's longitude interval.  We
-  // only need to determine the distance "d" of this point from the z-axis.
-  //
-  // Let's restrict our attention to a particular z-value.  In this z-plane,
-  // the S2LatLngRect is a circular arc.  The centroid of this arc lies on a
-  // radial line through the midpoint of the arc, and at a distance from the
-  // z-axis of
-  //
-  //     r * (sin(alpha) / alpha)
-  //
-  // where r = sqrt(1-z^2) is the radius of the arc, and "alpha" is half of
-  // the arc length (i.e., the arc covers longitudes [-alpha, alpha]).
-  //
-  // To find the centroid distance from the z-axis for the entire rectangle,
-  // we just need to integrate over the z-interval.  This gives
-  //
-  //    d = Integrate[sqrt(1-z^2)*sin(alpha)/alpha, z1..z2] / (z2 - z1)
-  //
-  // where [z1, z2] is the range of z-values covered by the rectangle.  This
-  // simplifies to
-  //
-  //    d = sin(alpha)/(2*alpha*(z2-z1))*(z2*r2 - z1*r1 + theta2 - theta1)
-  //
-  // where [theta1, theta2] is the latitude interval, z1=sin(theta1),
-  // z2=sin(theta2), r1=cos(theta1), and r2=cos(theta2).
-  //
-  // Finally, we want to return not the centroid itself, but the centroid
-  // scaled by the area of the rectangle.  The area of the rectangle is
-  //
-  //    A = 2 * alpha * (z2 - z1)
-  //
-  // which fortunately appears in the denominator of "d".
-
-  if (is_empty()) return S2Point();
-  double z1 = sin(lat_lo()), z2 = sin(lat_hi());
-  double r1 = cos(lat_lo()), r2 = cos(lat_hi());
-  double alpha = 0.5 * lng_.GetLength();
-  double r = sin(alpha) * (r2 * z2 - r1 * z1 + lat_.GetLength());
-  double lng = lng_.GetCenter();
-  double z = alpha * (z2 + z1) * (z2 - z1);  // scaled by the area
-  return S2Point(r * cos(lng), r * sin(lng), z);
+  return lng().GetLength()* fabs(sin(lat_hi().radians()) -
+                                 sin(lat_lo().radians()));
 }
 
 bool S2LatLngRect::Contains(S2LatLng const& ll) const {
-  DLOG_IF(ERROR, !ll.is_valid())
-      << "Invalid S2LatLng in S2LatLngRect::Contains: " << ll;
-
+  DCHECK(ll.is_valid());
   return (lat_.Contains(ll.lat().radians()) &&
           lng_.Contains(ll.lng().radians()));
 }
@@ -145,9 +74,7 @@ bool S2LatLngRect::InteriorContains(S2Point const& p) const {
 }
 
 bool S2LatLngRect::InteriorContains(S2LatLng const& ll) const {
-  DLOG_IF(ERROR, !ll.is_valid())
-      << "Invalid S2LatLng in S2LatLngRect::InteriorContains: " << ll;
-
+  DCHECK(ll.is_valid());
   return (lat_.InteriorContains(ll.lat().radians()) &&
           lng_.InteriorContains(ll.lng().radians()));
 }
@@ -175,30 +102,17 @@ void S2LatLngRect::AddPoint(S2Point const& p) {
 }
 
 void S2LatLngRect::AddPoint(S2LatLng const& ll) {
-  DLOG_IF(ERROR, !ll.is_valid())
-      << "Invalid S2LatLng in S2LatLngRect::AddPoint: " << ll;
-
+  DCHECK(ll.is_valid());
   lat_.AddPoint(ll.lat().radians());
   lng_.AddPoint(ll.lng().radians());
 }
 
 S2LatLngRect S2LatLngRect::Expanded(S2LatLng const& margin) const {
-  DLOG_IF(ERROR, margin.lat().radians() < 0)
-      << "Inappropriate margin in S2LatLngRect::Expanded: " << margin;
-
-  DLOG_IF(ERROR, margin.lng().radians() < 0)
-      << "Inappropriate margin in S2LatLngRect::Expanded: " << margin;
-
+  DCHECK_GE(margin.lat().radians(), 0);
+  DCHECK_GE(margin.lng().radians(), 0);
   return S2LatLngRect(
       lat_.Expanded(margin.lat().radians()).Intersection(FullLat()),
       lng_.Expanded(margin.lng().radians()));
-}
-
-S2LatLngRect S2LatLngRect::PolarClosure() const {
-  if (lat_.lo() == -M_PI_2 || lat_.hi() == M_PI_2) {
-    return S2LatLngRect(lat_, S1Interval::Full());
-  }
-  return *this;
 }
 
 S2LatLngRect S2LatLngRect::Union(S2LatLngRect const& other) const {
@@ -216,16 +130,18 @@ S2LatLngRect S2LatLngRect::Intersection(S2LatLngRect const& other) const {
   return S2LatLngRect(lat, lng);
 }
 
-S2LatLngRect S2LatLngRect::ConvolveWithCap(S1Angle angle) const {
+S2LatLngRect S2LatLngRect::ConvolveWithCap(S1Angle const& angle) const {
   // The most straightforward approach is to build a cap centered on each
   // vertex and take the union of all the bounding rectangles (including the
   // original rectangle; this is necessary for very large rectangles).
 
   // Optimization: convert the angle to a height exactly once.
-  double height = S2Cap::RadiusToHeight(angle);
+  S2Cap cap = S2Cap::FromAxisAngle(S2Point(1, 0, 0), angle);
+
   S2LatLngRect r = *this;
   for (int k = 0; k < 4; ++k) {
-    S2Cap vertex_cap = S2Cap::FromCenterHeight(GetVertex(k).ToPoint(), height);
+    S2Cap vertex_cap = S2Cap::FromAxisHeight(GetVertex(k).ToPoint(),
+                                             cap.height());
     r = r.Union(vertex_cap.GetRectBound());
   }
   return r;
@@ -247,7 +163,8 @@ S2Cap S2LatLngRect::GetCapBound() const {
     pole_z = 1;
     pole_angle = M_PI_2 - lat_.lo();
   }
-  S2Cap pole_cap(S2Point(0, 0, pole_z), S1Angle::Radians(pole_angle));
+  S2Cap pole_cap = S2Cap::FromAxisAngle(S2Point(0, 0, pole_z),
+                                        S1Angle::Radians(pole_angle));
 
   // For bounding rectangles that span 180 degrees or less in longitude, the
   // maximum cap size is achieved at one of the rectangle vertices.  For
@@ -256,7 +173,8 @@ S2Cap S2LatLngRect::GetCapBound() const {
   double lng_span = lng_.hi() - lng_.lo();
   if (remainder(lng_span, 2 * M_PI) >= 0) {
     if (lng_span < 2 * M_PI) {
-      S2Cap mid_cap(GetCenter().ToPoint(), S1Angle::Radians(0));
+      S2Cap mid_cap = S2Cap::FromAxisAngle(GetCenter().ToPoint(),
+                                           S1Angle::Radians(0));
       for (int k = 0; k < 4; ++k) {
         mid_cap.AddPoint(GetVertex(k).ToPoint());
       }
@@ -292,7 +210,7 @@ bool S2LatLngRect::MayIntersect(S2Cell const& cell) const {
 void S2LatLngRect::Encode(Encoder* encoder) const {
   encoder->Ensure(40);  // sufficient
 
-  encoder->put8(kCurrentLosslessEncodingVersionNumber);
+  encoder->put8(kCurrentEncodingVersionNumber);
   encoder->putdouble(lat_.lo());
   encoder->putdouble(lat_.hi());
   encoder->putdouble(lng_.lo());
@@ -302,10 +220,8 @@ void S2LatLngRect::Encode(Encoder* encoder) const {
 }
 
 bool S2LatLngRect::Decode(Decoder* decoder) {
-  if (decoder->avail() < sizeof(unsigned char) + 4 * sizeof(double))
-    return false;
   unsigned char version = decoder->get8();
-  if (version > kCurrentLosslessEncodingVersionNumber) return false;
+  if (version > kCurrentEncodingVersionNumber) return false;
 
   double lat_lo = decoder->getdouble();
   double lat_hi = decoder->getdouble();
@@ -314,10 +230,9 @@ bool S2LatLngRect::Decode(Decoder* decoder) {
   double lng_hi = decoder->getdouble();
   lng_ = S1Interval(lng_lo, lng_hi);
 
-  DLOG_IF(ERROR, !is_valid())
-      << "Invalid result in S2LatLngRect::Decode: " << *this;
+  DCHECK(is_valid());
 
-  return true;
+  return decoder->avail() >= 0;
 }
 
 bool S2LatLngRect::IntersectsLngEdge(S2Point const& a, S2Point const& b,
@@ -340,13 +255,13 @@ bool S2LatLngRect::IntersectsLatEdge(S2Point const& a, S2Point const& b,
   DCHECK(S2::IsUnitLength(b));
 
   // First, compute the normal to the plane AB that points vaguely north.
-  Vector3_d z = S2::RobustCrossProd(a, b).Normalize();
+  S2Point z = S2::RobustCrossProd(a, b).Normalize();
   if (z[2] < 0) z = -z;
 
   // Extend this to an orthonormal frame (x,y,z) where x is the direction
   // where the great circle through AB achieves its maximium latitude.
-  Vector3_d y = S2::RobustCrossProd(z, S2Point(0, 0, 1)).Normalize();
-  Vector3_d x = y.CrossProd(z);
+  S2Point y = S2::RobustCrossProd(z, S2Point(0, 0, 1)).Normalize();
+  S2Point x = y.CrossProd(z);
   DCHECK(S2::IsUnitLength(x));
   DCHECK_GE(x[2], 0);
 
@@ -479,23 +394,24 @@ S1Angle S2LatLngRect::GetDistance(S2LatLngRect const& other) const {
   // distance tests.
   S2Point a_lo = S2LatLng(a.lat_lo(), a_lng).ToPoint();
   S2Point a_hi = S2LatLng(a.lat_hi(), a_lng).ToPoint();
+  S2Point a_lo_cross_hi =
+      S2LatLng::FromRadians(0, a_lng.radians() - M_PI_2).Normalized().ToPoint();
   S2Point b_lo = S2LatLng(b.lat_lo(), b_lng).ToPoint();
   S2Point b_hi = S2LatLng(b.lat_hi(), b_lng).ToPoint();
-  return min(S2EdgeUtil::GetDistance(a_lo, b_lo, b_hi),
-         min(S2EdgeUtil::GetDistance(a_hi, b_lo, b_hi),
-         min(S2EdgeUtil::GetDistance(b_lo, a_lo, a_hi),
-             S2EdgeUtil::GetDistance(b_hi, a_lo, a_hi))));
+  S2Point b_lo_cross_hi =
+      S2LatLng::FromRadians(0, b_lng.radians() - M_PI_2).Normalized().ToPoint();
+  return min(S2EdgeUtil::GetDistance(a_lo, b_lo, b_hi, b_lo_cross_hi),
+         min(S2EdgeUtil::GetDistance(a_hi, b_lo, b_hi, b_lo_cross_hi),
+         min(S2EdgeUtil::GetDistance(b_lo, a_lo, a_hi, a_lo_cross_hi),
+             S2EdgeUtil::GetDistance(b_hi, a_lo, a_hi, a_lo_cross_hi))));
 }
 
 S1Angle S2LatLngRect::GetDistance(S2LatLng const& p) const {
-  // The algorithm here is the same as in GetDistance(S2LatLngRect), only
+  // The algorithm here is the same as in GetDistance(S2LagLngRect), only
   // with simplified calculations.
   S2LatLngRect const& a = *this;
-  DLOG_IF(ERROR, a.is_empty())
-      << "Empty S2LatLngRect in S2LatLngRect::GetDistance: " << a;
-
-  DLOG_IF(ERROR, !p.is_valid())
-      << "Invalid S2LatLng in S2LatLngRect::GetDistance: " << p;
+  DCHECK(!a.is_empty());
+  DCHECK(p.is_valid());
 
   if (a.lng().Contains(p.lng().radians())) {
     return S1Angle::Radians(max(0.0, max(p.lat().radians() - a.lat().hi(),
@@ -511,7 +427,9 @@ S1Angle S2LatLngRect::GetDistance(S2LatLng const& p) const {
   }
   S2Point lo = S2LatLng::FromRadians(a.lat().lo(), a_lng).ToPoint();
   S2Point hi = S2LatLng::FromRadians(a.lat().hi(), a_lng).ToPoint();
-  return S2EdgeUtil::GetDistance(p.ToPoint(), lo, hi);
+  S2Point lo_cross_hi =
+      S2LatLng::FromRadians(0, a_lng - M_PI_2).Normalized().ToPoint();
+  return S2EdgeUtil::GetDistance(p.ToPoint(), lo, hi, lo_cross_hi);
 }
 
 S1Angle S2LatLngRect::GetHausdorffDistance(S2LatLngRect const& other) const {
@@ -542,10 +460,10 @@ S1Angle S2LatLngRect::GetDirectedHausdorffDistance(
   // lng_diff. Call b's two endpoints b_lo and b_hi. Let H be the hemisphere
   // containing a and delimited by the longitude line of b. The Voronoi diagram
   // of b on H has three edges (portions of great circles) all orthogonal to b
-  // and meeting at b_lo cross b_hi.
-  // E1: (b_lo, b_lo cross b_hi)
-  // E2: (b_hi, b_lo cross b_hi)
-  // E3: (-b_mid, b_lo cross b_hi), where b_mid is the midpoint of b
+  // and meeting at b_lo_cross_b_hi.
+  // E1: (b_lo, b_lo_cross_b_hi)
+  // E2: (b_hi, b_lo_cross_b_hi)
+  // E3: (-b_mid, b_lo_cross_b_hi), where b_mid is the midpoint of b
   //
   // They subdivide H into three Voronoi regions. Depending on how longitude 0
   // (which contains edge a) intersects these regions, we distinguish two cases:
@@ -577,6 +495,9 @@ S1Angle S2LatLngRect::GetDirectedHausdorffDistance(
   // Two endpoints of b.
   S2Point b_lo = S2LatLng::FromRadians(b.lo(), b_lng).ToPoint();
   S2Point b_hi = S2LatLng::FromRadians(b.hi(), b_lng).ToPoint();
+  // Cross product of b_lo and b_hi.
+  const S2Point& b_lo_cross_b_hi =
+      S2LatLng::FromRadians(0, b_lng - M_PI_2).ToPoint();
 
   // Handling of each case outlined at the top of the function starts here.
   // This is initialized a few lines below.
@@ -585,9 +506,9 @@ S1Angle S2LatLngRect::GetDirectedHausdorffDistance(
   // Cases A1 and B1.
   S2Point a_lo = S2LatLng::FromRadians(a.lo(), 0).ToPoint();
   S2Point a_hi = S2LatLng::FromRadians(a.hi(), 0).ToPoint();
-  max_distance = S2EdgeUtil::GetDistance(a_lo, b_lo, b_hi);
+  max_distance = S2EdgeUtil::GetDistance(a_lo, b_lo, b_hi, b_lo_cross_b_hi);
   max_distance = max(
-      max_distance, S2EdgeUtil::GetDistance(a_hi, b_lo, b_hi));
+      max_distance, S2EdgeUtil::GetDistance(a_hi, b_lo, b_hi, b_lo_cross_b_hi));
 
   if (lng_diff <= M_PI_2) {
     // Case A2.
@@ -599,7 +520,7 @@ S1Angle S2LatLngRect::GetDirectedHausdorffDistance(
     const S2Point& p = GetBisectorIntersection(b, b_lng);
     double p_lat = S2LatLng::Latitude(p).radians();
     if (a.Contains(p_lat)) {
-      max_distance = max(max_distance, S1Angle(p, b_lo));
+      max_distance = max(max_distance, S1Angle::Radians(p.Angle(b_lo)));
     }
 
     // Case B3.
@@ -649,7 +570,7 @@ S1Angle S2LatLngRect::GetInteriorMaxDistance(R1Interval const& a_lat,
   S2Point intersection_point = S2Point(-b.x(), 0, -b.z()).Normalize();
   if (a_lat.InteriorContains(
       S2LatLng::Latitude(intersection_point).radians())) {
-    return S1Angle(b, intersection_point);
+    return S1Angle::Radians(b.Angle(intersection_point));
   } else {
     return S1Angle::Radians(-1);
   }
@@ -665,12 +586,6 @@ bool S2LatLngRect::ApproxEquals(S2LatLngRect const& other,
           lng_.ApproxEquals(other.lng_, max_error));
 }
 
-bool S2LatLngRect::ApproxEquals(S2LatLngRect const& other,
-                                S2LatLng const& max_error) const {
-  return (lat_.ApproxEquals(other.lat_, max_error.lat().radians()) &&
-          lng_.ApproxEquals(other.lng_, max_error.lng().radians()));
-}
-
-std::ostream& operator<<(std::ostream& os, S2LatLngRect const& r) {
+ostream& operator<<(ostream& os, S2LatLngRect const& r) {
   return os << "[Lo" << r.lo() << ", Hi" << r.hi() << "]";
 }

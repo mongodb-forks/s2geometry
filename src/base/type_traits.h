@@ -1,57 +1,15 @@
 // Copyright 2006 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// All rights reserved.
-//
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
-//
-//     * Redistributions of source code must retain the above copyright
-// notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-// copyright notice, this list of conditions and the following disclaimer
-// in the documentation and/or other materials provided with the
-// distribution.
-//     * Neither the name of Google Inc. nor the names of its
-// contributors may be used to endorse or promote products derived from
-// this software without specific prior written permission.
-//
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-// ----
-//
-//
 // This code is compiled directly on many platforms, including client
 // platforms like Windows, Mac, and embedded systems.  Before making
 // any changes here, make sure that you're not breaking any platforms.
 //
+//
 // Define a small subset of tr1 type traits. The traits we define are:
-//   enable_if
 //   is_integral
 //   is_floating_point
 //   is_pointer
+//   is_enum
 //   is_reference
 //   is_pod
 //   has_trivial_constructor
@@ -71,16 +29,22 @@
 #ifndef BASE_TYPE_TRAITS_H_
 #define BASE_TYPE_TRAITS_H_
 
-#include <utility>                  // For pair
+#include "template_util.h"     // For true_type and false_type
+#include <utility>
+using std::pair;
+using std::make_pair;
+                  // For pair
 
-#include "base/template_util.h"     // For true_type and false_type
+namespace base {
 
-_START_GOOGLE_NAMESPACE_
-
-template <bool cond, class T> struct enable_if;
 template <class T> struct is_integral;
 template <class T> struct is_floating_point;
 template <class T> struct is_pointer;
+// MSVC can't compile this correctly, and neither can gcc 3.3.5 (at least)
+#if !defined(_MSC_VER) && !(defined(__GNUC__) && __GNUC__ <= 3)
+// is_enum uses is_convertible, which is not available on MSVC.
+template <class T> struct is_enum;
+#endif
 template <class T> struct is_reference;
 template <class T> struct is_pod;
 template <class T> struct has_trivial_constructor;
@@ -94,19 +58,11 @@ template <class T> struct remove_reference;
 template <class T> struct add_reference;
 template <class T> struct remove_pointer;
 template <class T, class U> struct is_same;
-#if !(defined(__GNUC__) && __GNUC__ <= 3)
+#if !defined(_MSC_VER) && !(defined(__GNUC__) && __GNUC__ <= 3)
 template <class From, class To> struct is_convertible;
 #endif
 
-// enable_if, equivalent semantics to c++11 std::enable_if, specifically:
-//   "If B is true, the member typedef type shall equal T; otherwise, there
-//    shall be no member typedef type."
-// Specified by 20.9.7.6 [Other transformations]
-template<bool cond, class T = void> struct enable_if { typedef T type; };
-template<class T> struct enable_if<false, T> {};
-
-// is_integral is false except for the built-in integer types. A
-// cv-qualified type is integral if and only if the underlying type is.
+// is_integral is false except for the built-in integer types.
 template <class T> struct is_integral : false_type { };
 template<> struct is_integral<bool> : true_type { };
 template<> struct is_integral<char> : true_type { };
@@ -126,35 +82,22 @@ template<> struct is_integral<int> : true_type { };
 template<> struct is_integral<unsigned int> : true_type { };
 template<> struct is_integral<long> : true_type { };
 template<> struct is_integral<unsigned long> : true_type { };
-#ifdef HAVE_LONG_LONG
 template<> struct is_integral<long long> : true_type { };
 template<> struct is_integral<unsigned long long> : true_type { };
-#endif
-template <class T> struct is_integral<const T> : is_integral<T> { };
-template <class T> struct is_integral<volatile T> : is_integral<T> { };
-template <class T> struct is_integral<const volatile T> : is_integral<T> { };
+
 
 // is_floating_point is false except for the built-in floating-point types.
-// A cv-qualified type is integral if and only if the underlying type is.
 template <class T> struct is_floating_point : false_type { };
 template<> struct is_floating_point<float> : true_type { };
 template<> struct is_floating_point<double> : true_type { };
 template<> struct is_floating_point<long double> : true_type { };
-template <class T> struct is_floating_point<const T>
-    : is_floating_point<T> { };
-template <class T> struct is_floating_point<volatile T>
-    : is_floating_point<T> { };
-template <class T> struct is_floating_point<const volatile T>
-    : is_floating_point<T> { };
 
-// is_pointer is false except for pointer types. A cv-qualified type (e.g.
-// "int* const", as opposed to "int const*") is cv-qualified if and only if
-// the underlying type is.
+
+// is_pointer is false except for pointer types.
 template <class T> struct is_pointer : false_type { };
 template <class T> struct is_pointer<T*> : true_type { };
-template <class T> struct is_pointer<const T> : is_pointer<T> { };
-template <class T> struct is_pointer<volatile T> : is_pointer<T> { };
-template <class T> struct is_pointer<const volatile T> : is_pointer<T> { };
+
+#if !defined(_MSC_VER) && !(defined(__GNUC__) && __GNUC__ <= 3)
 
 namespace internal {
 
@@ -164,47 +107,43 @@ template <class T> struct is_class_or_union {
   static const bool value = sizeof(tester<T>(0)) == sizeof(small_);
 };
 
-#if defined(_MSC_VER) || (defined(__GNUC__) && __GNUC__ <= 3)
-
-// is_enum not meaningfully available on MSVC or old GCC: always false_type.
-template <class T> struct is_enum : base::false_type { };
-
-#else  // case for non-GCC or old GCC follows
-
 // is_convertible chokes if the first argument is an array. That's why
 // we use add_reference here.
-template <class T, bool IsEnum> struct is_enum_impl
+template <bool NotUnum, class T> struct is_enum_impl
     : is_convertible<typename add_reference<T>::type, int> { };
 
-template <class T> struct is_enum_impl<T, false> : false_type { };
+template <class T> struct is_enum_impl<true, T> : false_type { };
+
+}  // namespace internal
+
+// Specified by TR1 [4.5.1] primary type categories.
 
 // Implementation note:
 //
-// Supported types are either void, integral, floating point, array, pointer,
+// Each type is either void, integral, floating point, array, pointer,
 // reference, member object pointer, member function pointer, enum,
 // union or class. Out of these, only integral, floating point, reference,
 // class and enum types are potentially convertible to int. Therefore,
 // if a type is not a reference, integral, floating point or class and
-// is convertible to int, it's a enum. Adding cv-qualification to a type
-// does not change whether it's an enum.
+// is convertible to int, it's a enum.
 //
-// is_enum_impl's is_convertible check is done only if all other checks pass,
+// Is-convertible-to-int check is done only if all other checks pass,
 // because it can't be used with some types (e.g. void or classes with
 // inaccessible conversion operators).
 template <class T> struct is_enum
-    : is_enum_impl<T, !is_same<T, void>::value &&
-                      !is_integral<T>::value &&
-                      !is_floating_point<T>::value &&
-                      !is_reference<T>::value &&
-                      !is_class_or_union<T>::value> { };
-
-#endif
+    : internal::is_enum_impl<
+          is_same<T, void>::value ||
+              is_integral<T>::value ||
+              is_floating_point<T>::value ||
+              is_reference<T>::value ||
+              internal::is_class_or_union<T>::value,
+          T> { };
 
 template <class T> struct is_enum<const T> : is_enum<T> { };
 template <class T> struct is_enum<volatile T> : is_enum<T> { };
 template <class T> struct is_enum<const volatile T> : is_enum<T> { };
 
-}  // namespace internal
+#endif
 
 // is_reference is false except for reference types.
 template<typename T> struct is_reference : false_type {};
@@ -213,16 +152,16 @@ template<typename T> struct is_reference<T&> : true_type {};
 
 // We can't get is_pod right without compiler help, so fail conservatively.
 // We will assume it's false except for arithmetic types, enumerations,
-// pointers and cv-qualified versions thereof. Note that std::pair<T,U>
-// is not a POD even if T and U are PODs.
+// pointers and const versions thereof. Note that std::pair is not a POD.
 template <class T> struct is_pod
  : integral_constant<bool, (is_integral<T>::value ||
                             is_floating_point<T>::value ||
-                            internal::is_enum<T>::value ||
+#if !defined(_MSC_VER) && !(defined(__GNUC__) && __GNUC__ <= 3)
+                            // is_enum is not available on MSVC.
+                            is_enum<T>::value ||
+#endif
                             is_pointer<T>::value)> { };
 template <class T> struct is_pod<const T> : is_pod<T> { };
-template <class T> struct is_pod<volatile T> : is_pod<T> { };
-template <class T> struct is_pod<const volatile T> : is_pod<T> { };
 
 
 // We can't get has_trivial_constructor right without compiler help, so
@@ -341,16 +280,6 @@ struct is_convertible
 };
 #endif
 
-_END_GOOGLE_NAMESPACE_
-
-// Right now these macros are no-ops, and mostly just document the fact
-// these types are PODs, for human use.  They may be made more contentful
-// later.  The typedef is just to make it legal to put a semicolon after
-// these macros.
-#define DECLARE_POD(TypeName) typedef int Dummy_Type_For_DECLARE_POD
-#define DECLARE_NESTED_POD(TypeName) DECLARE_POD(TypeName)
-#define PROPAGATE_POD_FROM_TEMPLATE_ARGUMENT(TemplateName)             \
-    typedef int Dummy_Type_For_PROPAGATE_POD_FROM_TEMPLATE_ARGUMENT
-#define ENFORCE_POD(TypeName) typedef int Dummy_Type_For_ENFORCE_POD
+} // Close namespace base
 
 #endif  // BASE_TYPE_TRAITS_H_

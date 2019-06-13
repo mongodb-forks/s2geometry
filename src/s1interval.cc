@@ -1,27 +1,8 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s1interval.h"
 
-#include <float.h>
-#include <algorithm>
-
-#include <glog/logging.h>
-
-using std::max;
+#include "base/logging.h"
 
 S1Interval S1Interval::FromPoint(double p) {
   if (p == -M_PI) p = M_PI;
@@ -179,17 +160,6 @@ void S1Interval::AddPoint(double p) {
   }
 }
 
-double S1Interval::ClampPoint(double p) const {
-  DCHECK(!is_empty());
-  DCHECK_LE(fabs(p), M_PI);
-  if (p == -M_PI) p = M_PI;
-  if (FastContains(p)) return p;
-  // Compute distance from p to each endpoint.
-  double dlo = PositiveDistance(p, lo());
-  double dhi = PositiveDistance(hi(), p);
-  return (dlo < dhi) ? lo() : hi();
-}
-
 S1Interval S1Interval::FromPointPair(double p1, double p2) {
   DCHECK_LE(fabs(p1), M_PI);
   DCHECK_LE(fabs(p2), M_PI);
@@ -202,20 +172,15 @@ S1Interval S1Interval::FromPointPair(double p1, double p2) {
   }
 }
 
-S1Interval S1Interval::Expanded(double margin) const {
-  if (margin >= 0) {
-    if (is_empty()) return *this;
-    // Check whether this interval will be full after expansion, allowing
-    // for a 1-bit rounding error when computing each endpoint.
-    if (GetLength() + 2 * margin + 2 * DBL_EPSILON >= 2 * M_PI) return Full();
-  } else {
-    if (is_full()) return *this;
-    // Check whether this interval will be empty after expansion, allowing
-    // for a 1-bit rounding error when computing each endpoint.
-    if (GetLength() + 2 * margin - 2 * DBL_EPSILON <= 0) return Empty();
-  }
-  S1Interval result(remainder(lo() - margin, 2*M_PI),
-                    remainder(hi() + margin, 2*M_PI));
+S1Interval S1Interval::Expanded(double radius) const {
+  DCHECK_GE(radius, 0);
+  if (is_empty()) return *this;
+
+  // Check whether this interval will be full after expansion, allowing
+  // for a 1-bit rounding error when computing each endpoint.
+  if (GetLength() + 2 * radius >= 2 * M_PI - 1e-15) return Full();
+
+  S1Interval result(remainder(lo() - radius, 2*M_PI), remainder(hi() + radius, 2*M_PI));
   if (result.lo() <= -M_PI) result.set_lo(M_PI);
   return result;
 }
@@ -278,16 +243,8 @@ S1Interval S1Interval::Intersection(S1Interval const& y) const {
 }
 
 bool S1Interval::ApproxEquals(S1Interval const& y, double max_error) const {
-  // Full and empty intervals require special cases because the "endpoints"
-  // are considered to be positioned arbitrarily.
-  if (is_empty()) return y.GetLength() <= 2 * max_error;
-  if (y.is_empty()) return GetLength() <= 2 * max_error;
-  if (is_full()) return y.GetLength() >= 2 * (M_PI - max_error);
-  if (y.is_full()) return GetLength() >= 2 * (M_PI - max_error);
-
-  // The purpose of the last test below is to verify that moving the endpoints
-  // does not invert the interval, e.g. [-1e20, 1e20] vs. [1e20, -1e20].
-  return (fabs(remainder(y.lo() - lo(), 2 * M_PI)) <= max_error &&
-          fabs(remainder(y.hi() - hi(), 2 * M_PI)) <= max_error &&
-          fabs(GetLength() - y.GetLength()) <= 2 * max_error);
+  if (is_empty()) return y.GetLength() <= max_error;
+  if (y.is_empty()) return GetLength() <= max_error;
+  return (fabs(remainder(y.lo() - lo(), 2 * M_PI)) +
+          fabs(remainder(y.hi() - hi(), 2 * M_PI))) <= max_error;
 }

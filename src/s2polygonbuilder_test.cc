@@ -1,47 +1,22 @@
 // Copyright 2006 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2polygonbuilder.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <algorithm>
-#include <string>
+#include <set>
+using std::set;
+using std::multiset;
 
-#include <gflags/gflags.h>
-#include <glog/logging.h>
+
+#include "base/logging.h"
 #include "base/macros.h"
-#include "base/port.h"
 #include "base/scoped_ptr.h"
-#include "base/stringprintf.h"
-#include "gtest/gtest.h"
-#include "s2.h"
+#include "strings/stringprintf.h"
+#include "testing/base/public/gunit.h"
 #include "s2cap.h"
-#include "s2edgeutil.h"
-#include "s2latlng.h"
-#include "s2loop.h"
 #include "s2polygon.h"
 #include "s2polyline.h"
 #include "s2testing.h"
-#include "util/math/matrix3x3.h"
-
-using std::max;
-using std::min;
-using std::pair;
-using std::vector;
+#include "util/math/matrix3x3-inl.h"
 
 namespace {
 
@@ -142,7 +117,7 @@ TestCase test_cases[] = {
       "5:5, 5:10, 10:10, 10:5" }, 4 },
 
   // 6: Five nested loops that touch at a point.
-  { 1, 0, true, 0.0, 0.8, 5.0,
+  { 0, 0, true, 0.0, 0.8, 5.0,
     { { "0:0, 0:10, 10:10, 10:0", true },
       { "0:0, 1:9, 9:9, 9:1", true },
       { "0:0, 2:8, 8:8, 8:2", true },
@@ -167,7 +142,7 @@ TestCase test_cases[] = {
 
   // 8: Seven diamonds nested within each other touching at one
   // point between each nested pair.
-  { 1, 0, true, 0.0, 9.0, 4.0,
+  { 0, 0, true, 0.0, 9.0, 4.0,
     { { "0:-70, -70:0, 0:70, 70:0", true },
       { "0:-70, -60:0, 0:60, 60:0", true },
       { "0:-50, -60:0, 0:50, 50:0", true },
@@ -234,7 +209,8 @@ S2Point Perturb(S2Point const& x, double max_perturb) {
 
   if (max_perturb == 0) return x;
   return S2Testing::SamplePoint(
-      S2Cap(x.Normalize(), S1Angle::Radians(max_perturb)));
+      S2Cap::FromAxisAngle(x.Normalize(),
+                           S1Angle::Radians(max_perturb)));
 }
 
 void GetVertices(char const* str, Matrix3x3_d const& m,
@@ -260,7 +236,7 @@ void AddEdge(S2Point const& v0, S2Point const& v1,
     // Choose an interpolation parameter such that the length of each
     // piece is at least min_edge.
     double f = min_edge / length;
-    double t = S2Testing::rnd.UniformDouble(f, 1-f);
+    double t = f + (1 - 2 * f) * S2Testing::rnd.RandDouble();
 
     // Now add the two sub-edges recursively.
     S2Point vmid = S2EdgeUtil::Interpolate(t, v0, v1);
@@ -350,7 +326,7 @@ void DumpUnusedEdges(vector<pair<S2Point, S2Point> > const& unused_edges,
 
   if (unused_edges.size() == num_expected) return;
   fprintf(stderr,
-          "Wrong number of unused edges (%d expected, %" PRIuS " actual):\n",
+          "Wrong number of unused edges (%d expected, %"PRIuS" actual):\n",
           num_expected, unused_edges.size());
   for (int i = 0; i < unused_edges.size(); ++i) {
     S2LatLng p0(m.Transpose() * unused_edges[i].first);
@@ -378,12 +354,19 @@ double SmallFraction() {
   return pow(1e-10, u);
 }
 
+extern void DeleteLoop(S2Loop* loop) {
+  delete loop;
+}
+extern void DeleteLoopsInVector(vector<S2Loop*>* loops) {
+  for_each(loops->begin(), loops->end(), DeleteLoop);
+  loops->clear();
+}
+
 bool TestBuilder(TestCase const* test) {
-  for (int iter = 0; iter < 500; ++iter) {
+  for (int iter = 0; iter < 250; ++iter) {
     S2PolygonBuilderOptions options;
     options.set_undirected_edges(EvalTristate(test->undirected_edges));
     options.set_xor_edges(EvalTristate(test->xor_edges));
-    options.set_snap_to_cell_centers(S2Testing::rnd.OneIn(2));
 
     // Each test has a minimum and a maximum merge radius.  The merge
     // radius must be at least the given minimum to ensure that all expected
@@ -495,7 +478,9 @@ bool TestBuilder(TestCase const* test) {
     // On each iteration we randomly rotate the test case around the sphere.
     // This causes the S2PolygonBuilder to choose different first edges when
     // trying to build loops.
-    Matrix3x3_d m = S2Testing::GetRandomFrame();
+    S2Point x, y, z;
+    S2Testing::GetRandomFrame(&x, &y, &z);
+    Matrix3x3_d m = Matrix3x3_d::FromCols(x, y, z);
     builder.set_debug_matrix(m);
 
     for (int i = 0; test->chains_in[i].str; ++i) {
@@ -510,9 +495,6 @@ bool TestBuilder(TestCase const* test) {
       S2Polygon polygon;
       builder.AssemblePolygon(&polygon, &unused_edges);
       polygon.Release(&loops);
-      for (int i = 0; i < loops.size(); ++i) {
-        loops[i]->Normalize();
-      }
     }
     vector<S2Loop*> expected;
     for (int i = 0; test->loops_out[i]; ++i) {
@@ -532,8 +514,6 @@ bool TestBuilder(TestCase const* test) {
     // errors in the actual perturbation.
     double max_error = 0.5 * min_merge + max_perturb;
     if (max_splits > 0 || max_perturb > 0) max_error += 1e-15;
-    if (options.snap_to_cell_centers())
-      max_error += options.GetRobustnessRadius().radians();
 
     // Note the single "|" below so that we print both sets of loops.
     if (FindMissingLoops(loops, expected, m,
@@ -555,12 +535,12 @@ bool TestBuilder(TestCase const* test) {
               options.edge_splice_fraction(),
               S1Angle::Radians(min_edge).degrees(),
               S1Angle::Radians(max_error).degrees());
-      S2Testing::DeleteLoops(&loops);
-      S2Testing::DeleteLoops(&expected);
+      DeleteLoopsInVector(&loops);
+      DeleteLoopsInVector(&expected);
       return false;
     }
-    S2Testing::DeleteLoops(&loops);
-    S2Testing::DeleteLoops(&expected);
+    DeleteLoopsInVector(&loops);
+    DeleteLoopsInVector(&expected);
   }
   return true;
 }
@@ -570,82 +550,6 @@ TEST(S2PolygonBuilder, AssembleLoops) {
     SCOPED_TRACE(StringPrintf("Test case %d", i));
     EXPECT_TRUE(TestBuilder(&test_cases[i]));
   }
-}
-
-TEST(S2PolygonBuilder, BuilderProducesValidPolygons) {
-  // Polygon is from
-  // http://oyster-explorer/q?q=0x3921163aa35a0aed:0xe7714a1275a29ec4
-  scoped_ptr<S2Polygon> polygon(
-      S2Testing::MakePolygon(
-          "32.2983095:72.3416582, 32.2986281:72.3423059, "
-          "32.2985238:72.3423743, 32.2987176:72.3427807, "
-          "32.2988174:72.3427056, 32.2991269:72.3433480, "
-          "32.2991881:72.3433077, 32.2990668:72.3430462, "
-          "32.2991745:72.3429778, 32.2995078:72.3436725, "
-          "32.2996075:72.3436269, 32.2985465:72.3413832, "
-          "32.2984558:72.3414530, 32.2988015:72.3421839, "
-          "32.2991552:72.3429416, 32.2990498:72.3430073, "
-          "32.2983764:72.3416059"));
-  ASSERT_TRUE(polygon->IsValid());
-
-  S2PolygonBuilderOptions options;
-  options.SetRobustnessRadius(S2Testing::MetersToAngle(10));
-
-  S2Polygon robust_polygon;
-  S2PolygonBuilder polygon_builder(options);
-  polygon_builder.AddPolygon(polygon.get());
-  // The bug triggers a DCHECK failure, so look for that in dbg mode, but
-  // an invalid polygon in opt mode.
-  EXPECT_DEBUG_DEATH(
-      ASSERT_TRUE(polygon_builder.AssemblePolygon(&robust_polygon, NULL));
-
-      // This should be EXPECT_TRUE, but there is a bug.
-      // The polygon produced contains two identical loops, and is:
-      // 32.298455799999999:72.341453000000001,
-      // 32.298523800000005:72.342374300000003,
-      // 32.298717600000003:72.342780700000006,
-      // 32.299049799999999:72.343007299999996;
-      // 32.298455799999999:72.341453000000001,
-      // 32.298523800000005:72.342374300000003,
-      // 32.298717600000003:72.342780700000006,
-      // 32.299049799999999:72.343007299999996
-      EXPECT_FALSE(robust_polygon.IsValid())
-          << "S2PolygonBuilder created invalid polygon\n"
-          << S2Testing::ToString(&robust_polygon)
-          << "\nfrom valid original polygon\n"
-          << S2Testing::ToString(polygon.get()),
-      "Check failed: parent == NULL \\|\\| "
-      "!new_loop->ContainsNested\\(parent\\)");
-}
-
-TEST(S2PolygonBuilderOptions, SnapLevel) {
-  S2PolygonBuilderOptions options;
-  options.SetRobustnessRadius(S1Angle::Degrees(180.0));
-  // Snapping is off.
-  EXPECT_EQ(-1, options.GetSnapLevel());
-
-  options.set_snap_to_cell_centers(true);
-
-  // Top level.
-  options.SetRobustnessRadius(S1Angle::Degrees(180.0));
-  EXPECT_EQ(0, options.GetSnapLevel());
-  ASSERT_LE(S1Angle::Radians(
-                S2::kMaxDiag.GetValue(options.GetSnapLevel()) / 2.0),
-            options.GetRobustnessRadius());
-
-  // Something smallish.
-  options.SetRobustnessRadius(S1Angle::Degrees(0.1));
-  ASSERT_LE(S1Angle::Radians(
-                S2::kMaxDiag.GetValue(options.GetSnapLevel()) / 2.0),
-            options.GetRobustnessRadius());
-  ASSERT_GT(S1Angle::Radians(
-                S2::kMaxDiag.GetValue(options.GetSnapLevel() - 1) / 2.0),
-            options.GetRobustnessRadius());
-
-  // Too small for a leaf cell.
-  options.SetRobustnessRadius(
-      S1Angle::Radians(S2::kMaxDiag.GetValue(S2::kMaxCellLevel) / 2.1));
-  EXPECT_EQ(-1, options.GetSnapLevel());
 }
 
 }  // namespace

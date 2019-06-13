@@ -1,35 +1,25 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
-//
 // Most of the S2R2Rect methods have trivial implementations in terms of the
 // R1Interval class, so most of the testing is done in that unit test.
 
 #include "s2r2rect.h"
 
-#include "base/integral_types.h"
-#include "base/stringprintf.h"
-#include "gtest/gtest.h"
-#include "r1interval.h"
+#include "strings/stringprintf.h"
+#include "testing/base/public/gunit.h"
 #include "s2.h"
 #include "s2cap.h"
 #include "s2cell.h"
-#include "s2cellid.h"
-#include "s2latlng.h"
 #include "s2latlngrect.h"
 #include "s2testing.h"
+
+static S2R2Rect MakeRect(double x_lo, double y_lo, double x_hi, double y_hi) {
+  // Convenience method to construct a rectangle.  This method is
+  // intentionally *not* in the S2R2Rect interface because the
+  // argument order is ambiguous, but hopefully it's not too confusing
+  // within the context of this unit test.
+  return S2R2Rect(R2Point(x_lo, y_lo), R2Point(x_hi, y_hi));
+}
 
 static void TestIntervalOps(S2R2Rect const& x, S2R2Rect const& y,
                             const char* expected_rexion,
@@ -90,7 +80,7 @@ TEST(S2R2Rect, EmptyRectangles) {
 
 TEST(S2R2Rect, ConstructorsAndAccessors) {
   // Check various constructors and accessor methods.
-  S2R2Rect d1 = S2R2Rect(R2Point(0.1, 0), R2Point(0.25, 1));
+  S2R2Rect d1 = MakeRect(0.1, 0, 0.25, 1);
   EXPECT_EQ(0.1, d1.x().lo());
   EXPECT_EQ(0.25, d1.x().hi());
   EXPECT_EQ(0.0, d1.y().lo());
@@ -101,27 +91,27 @@ TEST(S2R2Rect, ConstructorsAndAccessors) {
 
 TEST(S2R2Rect, FromCell) {
   // FromCell, FromCellId
-  EXPECT_EQ(S2R2Rect(R2Point(0, 0), R2Point(0.5, 0.5)),
+  EXPECT_EQ(MakeRect(0, 0, 0.5, 0.5),
             S2R2Rect::FromCell(S2Cell::FromFacePosLevel(0, 0, 1)));
-  EXPECT_EQ(S2R2Rect(R2Point(0, 0), R2Point(1, 1)),
+  EXPECT_EQ(MakeRect(0, 0, 1, 1),
             S2R2Rect::FromCellId(S2CellId::FromFacePosLevel(0, 0, 0)));
 }
 
 TEST(S2R2Rect, FromCenterSize) {
   // FromCenterSize()
   EXPECT_TRUE(S2R2Rect::FromCenterSize(R2Point(0.3, 0.5), R2Point(0.2, 0.4)).
-              ApproxEquals(S2R2Rect(R2Point(0.2, 0.3), R2Point(0.4, 0.7))));
+              ApproxEquals(MakeRect(0.2, 0.3, 0.4, 0.7)));
   EXPECT_TRUE(S2R2Rect::FromCenterSize(R2Point(1, 0.1), R2Point(0, 2)).
-              ApproxEquals(S2R2Rect(R2Point(1, -0.9), R2Point(1, 1.1))));
+              ApproxEquals(MakeRect(1, -0.9, 1, 1.1)));
 }
 
 TEST(S2R2Rect, FromPoint) {
   // FromPoint(), FromPointPair()
-  S2R2Rect d1 = S2R2Rect(R2Point(0.1, 0), R2Point(0.25, 1));
+  S2R2Rect d1 = MakeRect(0.1, 0, 0.25, 1);
   EXPECT_EQ(S2R2Rect(d1.lo(), d1.lo()), S2R2Rect::FromPoint(d1.lo()));
-  EXPECT_EQ(S2R2Rect(R2Point(0.15, 0.3), R2Point(0.35, 0.9)),
+  EXPECT_EQ(MakeRect(0.15, 0.3, 0.35, 0.9),
             S2R2Rect::FromPointPair(R2Point(0.15, 0.9), R2Point(0.35, 0.3)));
-  EXPECT_EQ(S2R2Rect(R2Point(0.12, 0), R2Point(0.83, 0.5)),
+  EXPECT_EQ(MakeRect(0.12, 0, 0.83, 0.5),
             S2R2Rect::FromPointPair(R2Point(0.83, 0), R2Point(0.12, 0.5)));
 }
 
@@ -165,7 +155,7 @@ TEST(S2R2Rect, IntervalOperations) {
   R2Point sw1 = R2Point(0, 0.25);
   R2Point ne1 = R2Point(0.5, 0.75);
   S2R2Rect r1(sw1, ne1);
-  S2R2Rect r1_mid = S2R2Rect(R2Point(0.25, 0.5), R2Point(0.25, 0.5));
+  S2R2Rect r1_mid = MakeRect(0.25, 0.5, 0.25, 0.5);
   S2R2Rect r_sw1(sw1, sw1);
   S2R2Rect r_ne1(ne1, ne1);
 
@@ -173,30 +163,30 @@ TEST(S2R2Rect, IntervalOperations) {
   TestIntervalOps(r1, r_sw1, "TFTF", r1, r_sw1);
   TestIntervalOps(r1, r_ne1, "TFTF", r1, r_ne1);
 
-  EXPECT_EQ(S2R2Rect(R2Point(0, 0.25), R2Point(0.5, 0.75)), r1);
-  TestIntervalOps(r1, S2R2Rect(R2Point(0.45, 0.1), R2Point(0.75, 0.3)), "FFTT",
-                  S2R2Rect(R2Point(0, 0.1), R2Point(0.75, 0.75)),
-                  S2R2Rect(R2Point(0.45, 0.25), R2Point(0.5, 0.3)));
-  TestIntervalOps(r1, S2R2Rect(R2Point(0.5, 0.1), R2Point(0.7, 0.3)), "FFTF",
-                  S2R2Rect(R2Point(0, 0.1), R2Point(0.7, 0.75)),
-                  S2R2Rect(R2Point(0.5, 0.25), R2Point(0.5, 0.3)));
-  TestIntervalOps(r1, S2R2Rect(R2Point(0.45, 0.1), R2Point(0.7, 0.25)), "FFTF",
-                  S2R2Rect(R2Point(0, 0.1), R2Point(0.7, 0.75)),
-                  S2R2Rect(R2Point(0.45, 0.25), R2Point(0.5, 0.25)));
+  EXPECT_EQ(MakeRect(0, 0.25, 0.5, 0.75), r1);
+  TestIntervalOps(r1, MakeRect(0.45, 0.1, 0.75, 0.3), "FFTT",
+                  MakeRect(0, 0.1, 0.75, 0.75),
+                  MakeRect(0.45, 0.25, 0.5, 0.3));
+  TestIntervalOps(r1, MakeRect(0.5, 0.1, 0.7, 0.3), "FFTF",
+                  MakeRect(0, 0.1, 0.7, 0.75),
+                  MakeRect(0.5, 0.25, 0.5, 0.3));
+  TestIntervalOps(r1, MakeRect(0.45, 0.1, 0.7, 0.25), "FFTF",
+                  MakeRect(0, 0.1, 0.7, 0.75),
+                  MakeRect(0.45, 0.25, 0.5, 0.25));
 
-  TestIntervalOps(S2R2Rect(R2Point(0.1, 0.2), R2Point(0.1, 0.3)),
-                  S2R2Rect(R2Point(0.15, 0.7), R2Point(0.2, 0.8)), "FFFF",
-                  S2R2Rect(R2Point(0.1, 0.2), R2Point(0.2, 0.8)),
+  TestIntervalOps(MakeRect(0.1, 0.2, 0.1, 0.3),
+                  MakeRect(0.15, 0.7, 0.2, 0.8), "FFFF",
+                  MakeRect(0.1, 0.2, 0.2, 0.8),
                   empty);
 
   // Check that the intersection of two rectangles that overlap in x but not y
   // is valid, and vice versa.
-  TestIntervalOps(S2R2Rect(R2Point(0.1, 0.2), R2Point(0.4, 0.5)),
-                  S2R2Rect(R2Point(0, 0), R2Point(0.2, 0.1)), "FFFF",
-                  S2R2Rect(R2Point(0, 0), R2Point(0.4, 0.5)), empty);
-  TestIntervalOps(S2R2Rect(R2Point(0, 0), R2Point(0.1, 0.3)),
-                  S2R2Rect(R2Point(0.2, 0.1), R2Point(0.3, 0.4)), "FFFF",
-                  S2R2Rect(R2Point(0, 0), R2Point(0.3, 0.4)), empty);
+  TestIntervalOps(MakeRect(0.1, 0.2, 0.4, 0.5),
+                  MakeRect(0, 0, 0.2, 0.1), "FFFF",
+                  MakeRect(0, 0, 0.4, 0.5), empty);
+  TestIntervalOps(MakeRect(0, 0, 0.1, 0.3),
+                  MakeRect(0.2, 0.1, 0.3, 0.4), "FFFF",
+                  MakeRect(0, 0, 0.3, 0.4), empty);
 }
 
 TEST(S2R2Rect, AddPoint) {
@@ -213,36 +203,11 @@ TEST(S2R2Rect, AddPoint) {
   EXPECT_EQ(r1, r2);
 }
 
-TEST(S2R2Rect, ClampPoint) {
-  S2R2Rect r1(R1Interval(0, 0.5), R1Interval(0.25, 0.75));
-
-  EXPECT_EQ(R2Point(0, 0.25), r1.ClampPoint(R2Point(-0.01, 0.24)));
-  EXPECT_EQ(R2Point(0, 0.48), r1.ClampPoint(R2Point(-5.0, 0.48)));
-  EXPECT_EQ(R2Point(0, 0.75), r1.ClampPoint(R2Point(-5.0, 2.48)));
-  EXPECT_EQ(R2Point(0.19, 0.75), r1.ClampPoint(R2Point(0.19, 2.48)));
-  EXPECT_EQ(R2Point(0.5, 0.75), r1.ClampPoint(R2Point(6.19, 2.48)));
-  EXPECT_EQ(R2Point(0.5, 0.53), r1.ClampPoint(R2Point(6.19, 0.53)));
-  EXPECT_EQ(R2Point(0.5, 0.25), r1.ClampPoint(R2Point(6.19, -2.53)));
-  EXPECT_EQ(R2Point(0.33, 0.25), r1.ClampPoint(R2Point(0.33, -2.53)));
-  EXPECT_EQ(R2Point(0.33, 0.37), r1.ClampPoint(R2Point(0.33, 0.37)));
-}
-
 TEST(S2R2Rect, Expanded) {
   // Expanded()
+  EXPECT_TRUE(MakeRect(0.2, 0.4, 0.3, 0.7).Expanded(R2Point(0.1, 0.3)).
+              ApproxEquals(MakeRect(0.1, 0.1, 0.4, 1.0)));
   EXPECT_TRUE(S2R2Rect::Empty().Expanded(R2Point(0.1, 0.3)).is_empty());
-  EXPECT_TRUE(S2R2Rect::Empty().Expanded(R2Point(-0.1, -0.3)).is_empty());
-  EXPECT_TRUE(S2R2Rect(R2Point(0.2, 0.4), R2Point(0.3, 0.7)).
-              Expanded(R2Point(0.1, 0.3)).
-              ApproxEquals(S2R2Rect(R2Point(0.1, 0.1), R2Point(0.4, 1.0))));
-  EXPECT_TRUE(S2R2Rect(R2Point(0.2, 0.4), R2Point(0.3, 0.7)).
-              Expanded(R2Point(-0.1, 0.3)).is_empty());
-  EXPECT_TRUE(S2R2Rect(R2Point(0.2, 0.4), R2Point(0.3, 0.7)).
-              Expanded(R2Point(0.1, -0.2)).is_empty());
-  EXPECT_TRUE(S2R2Rect(R2Point(0.2, 0.4), R2Point(0.3, 0.7)).
-              Expanded(R2Point(0.1, -0.1)).
-              ApproxEquals(S2R2Rect(R2Point(0.1, 0.5), R2Point(0.4, 0.6))));
-  EXPECT_TRUE(S2R2Rect(R2Point(0.2, 0.4), R2Point(0.3, 0.7)).Expanded(0.1).
-              ApproxEquals(S2R2Rect(R2Point(0.1, 0.3), R2Point(0.4, 0.8))));
 }
 
 TEST(S2R2Rect, Bounds) {
@@ -250,10 +215,10 @@ TEST(S2R2Rect, Bounds) {
   S2R2Rect empty = S2R2Rect::Empty();
   EXPECT_TRUE(empty.GetCapBound().is_empty());
   EXPECT_TRUE(empty.GetRectBound().is_empty());
-  EXPECT_EQ(S2Cap::FromPoint(S2Point(1, 0, 0)),
-            S2R2Rect(R2Point(0.5, 0.5), R2Point(0.5, 0.5)).GetCapBound());
+  EXPECT_EQ(S2Cap::FromAxisHeight(S2Point(1, 0, 0), 0),
+            MakeRect(0.5, 0.5, 0.5, 0.5).GetCapBound());
   EXPECT_EQ(S2LatLngRect::FromPoint(S2LatLng::FromDegrees(0, 0)),
-            S2R2Rect(R2Point(0.5, 0.5), R2Point(0.5, 0.5)).GetRectBound());
+            MakeRect(0.5, 0.5, 0.5, 0.5).GetRectBound());
 
   for (int i = 0; i < 10; ++i) {
     SCOPED_TRACE(StringPrintf("i=%d", i));
@@ -263,7 +228,7 @@ TEST(S2R2Rect, Bounds) {
     for (int k = 0; k < 4; ++k) {
       S2Point v = S2R2Rect::ToS2Point(rect.GetVertex(k));
       // v2 is a point that is well outside the rectangle.
-      S2Point v2 = (cap.center() + 3 * (v - cap.center())).Normalize();
+      S2Point v2 = (cap.axis() + 2 * (v - cap.axis())).Normalize();
       EXPECT_TRUE(cap.Contains(v));
       EXPECT_FALSE(cap.Contains(v2));
       EXPECT_TRUE(llrect.Contains(v));
@@ -276,32 +241,32 @@ TEST(S2R2Rect, CellOperations) {
   // Contains(S2Cell), MayIntersect(S2Cell)
 
   S2R2Rect empty = S2R2Rect::Empty();
-  TestCellOps(empty, S2Cell::FromFace(3), 0);
+  TestCellOps(empty, S2Cell::FromFacePosLevel(3, 0, 0), 0);
 
   // This rectangle includes the first quadrant of face 0.  It's expanded
   // slightly because cell bounding rectangles are slightly conservative.
-  S2R2Rect r4 = S2R2Rect(R2Point(0, 0), R2Point(0.5, 0.5));
+  S2R2Rect r4 = MakeRect(0, 0, 0.5, 0.5);
   TestCellOps(r4, S2Cell::FromFacePosLevel(0, 0, 0), 3);
   TestCellOps(r4, S2Cell::FromFacePosLevel(0, 0, 1), 4);
   TestCellOps(r4, S2Cell::FromFacePosLevel(1, 0, 1), 0);
 
   // This rectangle intersects the first quadrant of face 0.
-  S2R2Rect r5 = S2R2Rect(R2Point(0, 0.45), R2Point(0.5, 0.55));
+  S2R2Rect r5 = MakeRect(0, 0.45, 0.5, 0.55);
   TestCellOps(r5, S2Cell::FromFacePosLevel(0, 0, 0), 3);
   TestCellOps(r5, S2Cell::FromFacePosLevel(0, 0, 1), 3);
   TestCellOps(r5, S2Cell::FromFacePosLevel(1, 0, 1), 0);
 
   // Rectangle consisting of a single point.
-  TestCellOps(S2R2Rect(R2Point(0.51, 0.51), R2Point(0.51, 0.51)),
-              S2Cell::FromFace(0), 3);
+  TestCellOps(MakeRect(0.51, 0.51, 0.51, 0.51),
+              S2Cell::FromFacePosLevel(0, 0, 0), 3);
 
   // Rectangle that intersects the bounding rectangle of face 0
   // but not the face itself.
-  TestCellOps(S2R2Rect(R2Point(0.01, 1.001), R2Point(0.02, 1.002)),
-              S2Cell::FromFace(0), 0);
+  TestCellOps(MakeRect(0.01, 1.001, 0.02, 1.002),
+              S2Cell::FromFacePosLevel(0, 0, 0), 0);
 
   // Rectangle that intersects one corner of face 0.
-  TestCellOps(S2R2Rect(R2Point(0.99, -0.01), R2Point(1.01, 0.01)),
+  TestCellOps(MakeRect(0.99, -0.01, 1.01, 0.01),
               S2Cell::FromFacePosLevel(0, ~uint64(0) >> S2CellId::kFaceBits, 5),
               3);
 }

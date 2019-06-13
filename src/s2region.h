@@ -1,18 +1,4 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2REGION_H_
 #define UTIL_GEOMETRY_S2REGION_H_
@@ -38,7 +24,7 @@ class S2Region {
   virtual ~S2Region();
 
   // Return a deep copy of this region.  If you want to narrow the result to a
-  // specific known region type, use down_cast<T*> from casts.h.
+  // specific known region type, use down_cast<T*> from basictypes.h.
   // Subtypes return pointers to that subtype from their Clone() methods.
   virtual S2Region* Clone() const = 0;
 
@@ -52,9 +38,6 @@ class S2Region {
   // If this method returns true, the region completely contains the given
   // cell.  Otherwise, either the region does not contain the cell or the
   // containment relationship could not be determined.
-  //
-  // TODO(ericv): Rename this method to MustContain(), or create a method
-  // Classify() that combines this method with MayIntersect().
   virtual bool Contains(S2Cell const& cell) const = 0;
 
   // If this method returns false, the region does not intersect the given
@@ -65,7 +48,6 @@ class S2Region {
   // Return true if and only if the given point is contained by the region.
   // The point 'p' is generally required to be unit length, although some
   // subtypes may relax this restriction.
-  //
   // NOTE: If you will be calling this function on one specific subtype only,
   // or if performance is a consideration, please use the non-virtual
   // method Contains(S2Point const& p) declared below!

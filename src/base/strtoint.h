@@ -1,18 +1,5 @@
 // Copyright 2008 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
 // Architecture-neutral plug compatible replacements for strtol() friends.
 //
 // Long's have different lengths on ILP-32 and LP-64 platforms, and so overflow
@@ -45,9 +32,10 @@
 
 #include <stdlib.h> // For strtol* functions.
 #include <string>
-#include "base/integral_types.h"
-#include "base/macros.h"
+using std::string;
+
 #include "base/port.h"
+#include "base/basictypes.h"
 
 // Adapter functions for handling overflow and errno.
 int32 strto32_adapter(const char *nptr, char **endptr, int base);
@@ -57,14 +45,14 @@ uint32 strtou32_adapter(const char *nptr, char **endptr, int base);
 // platforms, but need a little extra work on 64-bit platforms.
 inline int32 strto32(const char *nptr, char **endptr, int base) {
   if (sizeof(int32) == sizeof(long))
-    return static_cast<int32>(strtol(nptr, endptr, base));
+    return strtol(nptr, endptr, base);
   else
     return strto32_adapter(nptr, endptr, base);
 }
 
 inline uint32 strtou32(const char *nptr, char **endptr, int base) {
   if (sizeof(uint32) == sizeof(unsigned long))
-    return static_cast<uint32>(strtoul(nptr, endptr, base));
+    return strtoul(nptr, endptr, base);
   else
     return strtou32_adapter(nptr, endptr, base);
 }

@@ -1,78 +1,41 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
-#include "s2polyline.h"
-
-#include <math.h>
-#include <algorithm>
-#include <functional>
 #include <set>
-#include <utility>
-#include <vector>
-
-#include <gflags/gflags.h>
-#include <glog/logging.h>
-#include "util/coding/coder.h"
-#include "s1angle.h"
-#include "s1interval.h"
-#include "s2.h"
-#include "s2cap.h"
-#include "s2cell.h"
-#include "s2edgeutil.h"
-#include "util/math/matrix3x3.h"
-
-using std::max;
-using std::min;
 using std::set;
+using std::multiset;
+
+#include <vector>
 using std::vector;
 
-static const unsigned char kCurrentLosslessEncodingVersionNumber = 1;
+#include "s2.h"
+#include "base/logging.h"
+#include "util/math/matrix3x3-inl.h"
+#include "s2polyline.h"
+
+#include "util/coding/coder.h"
+#include "s2cap.h"
+#include "s2cell.h"
+#include "s2latlng.h"
+#include "s2edgeutil.h"
+
+#include "mongo/util/str.h"
+using mongo::str::stream;
+
+static const unsigned char kCurrentEncodingVersionNumber = 1;
 
 S2Polyline::S2Polyline()
-  : s2debug_override_(ALLOW_S2DEBUG),
-    num_vertices_(0),
+  : num_vertices_(0),
     vertices_(NULL) {
 }
 
 S2Polyline::S2Polyline(vector<S2Point> const& vertices)
-  : s2debug_override_(ALLOW_S2DEBUG),
-    num_vertices_(0),
+  : num_vertices_(0),
     vertices_(NULL) {
   Init(vertices);
 }
 
 S2Polyline::S2Polyline(vector<S2LatLng> const& vertices)
-  : s2debug_override_(ALLOW_S2DEBUG),
-    num_vertices_(0),
-    vertices_(NULL) {
-  Init(vertices);
-}
-
-S2Polyline::S2Polyline(vector<S2Point> const& vertices,
-                       S2debugOverride override)
-  : s2debug_override_(override),
-    num_vertices_(0),
-    vertices_(NULL) {
-  Init(vertices);
-}
-
-S2Polyline::S2Polyline(vector<S2LatLng> const& vertices,
-                       S2debugOverride override)
-  : s2debug_override_(override),
-    num_vertices_(0),
+  : num_vertices_(0),
     vertices_(NULL) {
   Init(vertices);
 }
@@ -81,23 +44,20 @@ S2Polyline::~S2Polyline() {
   delete[] vertices_;
 }
 
-void S2Polyline::set_s2debug_override(S2debugOverride override) {
-  s2debug_override_ = override;
-}
-
-S2debugOverride S2Polyline::s2debug_override() const {
-  return static_cast<S2debugOverride>(s2debug_override_);
-}
-
 void S2Polyline::Init(vector<S2Point> const& vertices) {
-  if (FLAGS_s2debug && s2debug_override_ == ALLOW_S2DEBUG) {
-    CHECK(IsValid(vertices));
+  if (S2::debug) {
+      CHECK(IsValid(vertices));
   }
 
   delete[] vertices_;
   num_vertices_ = vertices.size();
   vertices_ = new S2Point[num_vertices_];
-  std::copy(vertices.begin(), vertices.end(), &vertices_[0]);
+  // Check (num_vertices_ > 0) to avoid invalid reference to vertices[0].
+  if (num_vertices_ > 0) {
+    // mongodb: void* casts to silence a -Wclass-memaccess warning.
+    memcpy(static_cast<void*>(vertices_), static_cast<const void*>(&vertices[0]),
+           num_vertices_ * sizeof(vertices_[0]));
+  }
 }
 
 void S2Polyline::Init(vector<S2LatLng> const& vertices) {
@@ -107,26 +67,21 @@ void S2Polyline::Init(vector<S2LatLng> const& vertices) {
   for (int i = 0; i < num_vertices_; ++i) {
     vertices_[i] = vertices[i].ToPoint();
   }
-  if (FLAGS_s2debug && s2debug_override_ == ALLOW_S2DEBUG) {
-    CHECK(IsValid());
+  if (S2::debug) {
+    vector<S2Point> vertex_vector(vertices_, vertices_ + num_vertices_);
+    CHECK(IsValid(vertex_vector));
   }
 }
 
-bool S2Polyline::IsValid() const {
-  return IsValid(vertices_, num_vertices_);
-}
-
-bool S2Polyline::IsValid(vector<S2Point> const& v) {
-  if (v.empty())
-    return true;
-  return IsValid(&v[0], v.size());
-}
-
-bool S2Polyline::IsValid(S2Point const* v, int n) {
+bool S2Polyline::IsValid(vector<S2Point> const& v, string* err) {
   // All vertices must be unit length.
+  int n = v.size();
   for (int i = 0; i < n; ++i) {
     if (!S2::IsUnitLength(v[i])) {
-      LOG(INFO) << "Vertex " << i << " is not unit length";
+      S2LOG(INFO) << "Vertex " << i << " is not unit length";
+      if (err) {
+        *err = stream() << "Vertex " << i << " is not unit length";
+      }
       return false;
     }
   }
@@ -134,8 +89,12 @@ bool S2Polyline::IsValid(S2Point const* v, int n) {
   // Adjacent vertices must not be identical or antipodal.
   for (int i = 1; i < n; ++i) {
     if (v[i-1] == v[i] || v[i-1] == -v[i]) {
-      LOG(INFO) << "Vertices " << (i - 1) << " and " << i
+      S2LOG(INFO) << "Vertices " << (i - 1) << " and " << i
                 << " are identical or antipodal";
+      if (err) {
+        *err = stream() << "Vertices " << (i - 1) << " and " << i
+                        << " are identical or antipodal";
+      }
       return false;
     }
   }
@@ -146,7 +105,9 @@ bool S2Polyline::IsValid(S2Point const* v, int n) {
 S2Polyline::S2Polyline(S2Polyline const* src)
   : num_vertices_(src->num_vertices_),
     vertices_(new S2Point[num_vertices_]) {
-  std::copy(&src->vertices_[0], &src->vertices_[num_vertices_], &vertices_[0]);
+  // mongodb: void* casts to silence a -Wclass-memaccess warning.
+  memcpy(static_cast<void*>(vertices_), static_cast<const void*>(src->vertices_),
+         num_vertices_ * sizeof(vertices_[0]));
 }
 
 S2Polyline* S2Polyline::Clone() const {
@@ -197,7 +158,7 @@ S2Point S2Polyline::GetSuffix(double fraction, int* next_vertex) const {
       // This interpolates with respect to arc length rather than
       // straight-line distance, and produces a unit-length result.
       S2Point result = S2EdgeUtil::InterpolateAtDistance(target, vertex(i-1),
-                                                         vertex(i));
+                                                         vertex(i), length);
       // It is possible that (result == vertex(i)) due to rounding errors.
       *next_vertex = (result == vertex(i)) ? (i + 1) : i;
       return result;
@@ -300,7 +261,7 @@ bool S2Polyline::Intersects(S2Polyline const* line) const {
     return false;
   }
 
-  // TODO(ericv): Use S2ShapeIndex here.
+  // TODO(user) look into S2EdgeIndex to make this near linear in performance.
   for (int i = 1; i < num_vertices(); ++i) {
     S2EdgeUtil::EdgeCrosser crosser(
         &vertex(i - 1), &vertex(i), &line->vertex(0));
@@ -314,7 +275,7 @@ bool S2Polyline::Intersects(S2Polyline const* line) const {
 }
 
 void S2Polyline::Reverse() {
-  std::reverse(vertices_, vertices_ + num_vertices_);
+  reverse(vertices_, vertices_ + num_vertices_);
 }
 
 S2LatLngRect S2Polyline::GetRectBound() const {
@@ -358,7 +319,7 @@ bool S2Polyline::MayIntersect(S2Cell const& cell) const {
 void S2Polyline::Encode(Encoder* const encoder) const {
   encoder->Ensure(num_vertices_ * sizeof(*vertices_) + 10);  // sufficient
 
-  encoder->put8(kCurrentLosslessEncodingVersionNumber);
+  encoder->put8(kCurrentEncodingVersionNumber);
   encoder->put32(num_vertices_);
   encoder->putn(vertices_, sizeof(*vertices_) * num_vertices_);
 
@@ -366,20 +327,20 @@ void S2Polyline::Encode(Encoder* const encoder) const {
 }
 
 bool S2Polyline::Decode(Decoder* const decoder) {
-  if (decoder->avail() < sizeof(unsigned char) + sizeof(uint32)) return false;
   unsigned char version = decoder->get8();
-  if (version > kCurrentLosslessEncodingVersionNumber) return false;
+  if (version > kCurrentEncodingVersionNumber) return false;
 
   num_vertices_ = decoder->get32();
   delete[] vertices_;
   vertices_ = new S2Point[num_vertices_];
-  if (decoder->avail() < num_vertices_ * sizeof(*vertices_)) return false;
   decoder->getn(vertices_, num_vertices_ * sizeof(*vertices_));
 
-  if (FLAGS_s2debug && s2debug_override_ == ALLOW_S2DEBUG) {
-    CHECK(IsValid());
+  if (S2::debug) {
+    vector<S2Point> vertex_vector(vertices_, vertices_ + num_vertices_);
+    CHECK(IsValid(vertex_vector));
   }
-  return true;
+
+  return decoder->avail() >= 0;
 }
 
 namespace {
@@ -388,7 +349,7 @@ namespace {
 // returns the maximal end index such that the line segment between these two
 // vertices passes within "tolerance" of all interior vertices, in order.
 int FindEndVertex(S2Polyline const& polyline,
-                  S1Angle tolerance, int index) {
+                  S1Angle const& tolerance, int index) {
   DCHECK_GE(tolerance.radians(), 0);
   DCHECK_LT((index + 1), polyline.num_vertices());
 
@@ -464,7 +425,7 @@ int FindEndVertex(S2Polyline const& polyline,
 }
 }
 
-void S2Polyline::SubsampleVertices(S1Angle tolerance,
+void S2Polyline::SubsampleVertices(S1Angle const& tolerance,
                                    vector<int>* indices) const {
   indices->clear();
   if (num_vertices() == 0) return;
@@ -531,7 +492,7 @@ struct less<SearchState> {
 }  // namespace std
 
 bool S2Polyline::NearlyCoversPolyline(S2Polyline const& covered,
-                                      S1Angle max_error) const {
+                                      S1Angle const& max_error) const {
   // NOTE: This algorithm is described assuming that adjacent vertices in a
   // polyline are never at the same point.  That is, the ith and i+1th vertices
   // of a polyline are never at the same point in space.  The implementation

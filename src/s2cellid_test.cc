@@ -1,42 +1,37 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2cellid.h"
 
-#include <math.h>
-#include <stdio.h>
 #include <algorithm>
-#include <ext/hash_map>
-using __gnu_cxx::hash;
-using __gnu_cxx::hash_map;
-#include <iosfwd>
-#include <iostream>
-#include <vector>
+using std::min;
+using std::max;
+using std::swap;
+using std::reverse;
 
-#include <gflags/gflags.h>
-#include <glog/logging.h>
-#include "base/macros.h"
-#include "gtest/gtest.h"
+#include <cstdio>
+#include <hash_map>
+using __gnu_cxx::hash_map;
+
+#include <sstream>
+#include <vector>
+using std::vector;
+
+
+#include "base/commandlineflags.h"
+#include "base/integral_types.h"
+#include "base/logging.h"
+#include "base/malloc_interface.h"
+#include "base/sysinfo.h"
+#include "testing/base/public/gunit.h"
 #include "s2.h"
 #include "s2latlng.h"
 #include "s2testing.h"
+#include "util/math/mathutil.h"
 
-
-using std::min;
-using std::vector;
+#define int8 HTM_int8  // To avoid conflicts with our own 'int8'
+#include "third_party/htm/include/SpatialIndex.h"
+#include "third_party/htm/include/RangeConvex.h"
+#undef int8
 
 DEFINE_int32(iters, 20000000,
              "Number of iterations for timing tests with optimized build");
@@ -47,7 +42,7 @@ DEFINE_int32(build_level, 5, "HTM build level to use");
 static S2CellId GetCellId(double lat_degrees, double lng_degrees) {
   S2CellId id = S2CellId::FromLatLng(S2LatLng::FromDegrees(lat_degrees,
                                                            lng_degrees));
-  LOG(INFO) << std::hex << id.id();
+  LOG(INFO) << hex << id.id();
   return id;
 }
 
@@ -57,11 +52,6 @@ TEST(S2CellId, DefaultConstructor) {
   EXPECT_FALSE(id.is_valid());
 }
 
-TEST(S2CellId, S2CellIdHasher) {
-  EXPECT_EQ(S2CellIdHasher()(GetCellId(0, 90)),
-            S2CellIdHasher()(GetCellId(0, 90)));
-}
-
 TEST(S2CellId, FaceDefinitions) {
   EXPECT_EQ(GetCellId(0, 0).face(), 0);
   EXPECT_EQ(GetCellId(0, 90).face(), 1);
@@ -69,12 +59,6 @@ TEST(S2CellId, FaceDefinitions) {
   EXPECT_EQ(GetCellId(0, 180).face(), 3);
   EXPECT_EQ(GetCellId(0, -90).face(), 4);
   EXPECT_EQ(GetCellId(-90, 0).face(), 5);
-}
-
-TEST(S2CellId, FromFace) {
-  for (int face = 0; face < 6; ++face) {
-    EXPECT_EQ(S2CellId::FromFacePosLevel(face, 0, 0), S2CellId::FromFace(face));
-  }
 }
 
 TEST(S2CellId, ParentChildRelationships) {
@@ -101,44 +85,6 @@ TEST(S2CellId, ParentChildRelationships) {
   // Check that cells are represented by the position of their center
   // along the Hilbert curve.
   EXPECT_EQ(id.range_min().id() + id.range_max().id(), 2 * id.id());
-}
-
-TEST(S2CellId, CenterSiTi) {
-  S2CellId id = S2CellId::FromFacePosLevel(3, 0x12345678,
-                                           S2CellId::kMaxLevel);
-  // Check that the (si, ti) coordinates of the center end in a
-  // 1 followed by (30 - level) 0s.
-  int si, ti;
-
-  // Leaf level, 30.
-  id.GetCenterSiTi(&si, &ti);
-  CHECK_EQ(1 << 0, si & 1);
-  CHECK_EQ(1 << 0, ti & 1);
-
-  // Level 29.
-  id.parent(S2CellId::kMaxLevel - 1).GetCenterSiTi(&si, &ti);
-  CHECK_EQ(1 << 1, si & 3);
-  CHECK_EQ(1 << 1, ti & 3);
-
-  // Level 28.
-  id.parent(S2CellId::kMaxLevel - 2).GetCenterSiTi(&si, &ti);
-  CHECK_EQ(1 << 2, si & 7);
-  CHECK_EQ(1 << 2, ti & 7);
-
-  // Level 20.
-  id.parent(S2CellId::kMaxLevel - 10).GetCenterSiTi(&si, &ti);
-  CHECK_EQ(1 << 10, si & ((1 << 11) - 1));
-  CHECK_EQ(1 << 10, ti & ((1 << 11) - 1));
-
-  // Level 10.
-  id.parent(S2CellId::kMaxLevel - 20).GetCenterSiTi(&si, &ti);
-  CHECK_EQ(1 << 20, si & ((1 << 21) - 1));
-  CHECK_EQ(1 << 20, ti & ((1 << 21) - 1));
-
-  // Level 0.
-  id.parent(0).GetCenterSiTi(&si, &ti);
-  CHECK_EQ(1 << 30, si & ((1U << 31) - 1));
-  CHECK_EQ(1 << 30, ti & ((1U << 31) - 1));
 }
 
 TEST(S2CellId, Wrapping) {
@@ -181,9 +127,11 @@ TEST(S2CellId, Advance) {
             S2CellId::FromFacePosLevel(5, 0, S2CellId::kMaxLevel));
 
   // Check basic properties of advance_wrap().
-  EXPECT_EQ(S2CellId::Begin(0).advance_wrap(7), S2CellId::FromFace(1));
+  EXPECT_EQ(S2CellId::Begin(0).advance_wrap(7),
+            S2CellId::FromFacePosLevel(1, 0, 0));
   EXPECT_EQ(S2CellId::Begin(0).advance_wrap(12), S2CellId::Begin(0));
-  EXPECT_EQ(S2CellId::FromFace(5).advance_wrap(-7), S2CellId::FromFace(4));
+  EXPECT_EQ(S2CellId::FromFacePosLevel(5, 0, 0).advance_wrap(-7),
+            S2CellId::FromFacePosLevel(4, 0, 0));
   EXPECT_EQ(S2CellId::Begin(0).advance_wrap(-12000000), S2CellId::Begin(0));
   EXPECT_EQ(S2CellId::Begin(5).advance_wrap(6644),
             S2CellId::Begin(5).advance_wrap(-11788));
@@ -192,69 +140,6 @@ TEST(S2CellId, Advance) {
   EXPECT_EQ(S2CellId::FromFacePosLevel(5, 0, S2CellId::kMaxLevel)
             .advance_wrap(static_cast<int64>(2) << (2 * S2CellId::kMaxLevel)),
             S2CellId::FromFacePosLevel(1, 0, S2CellId::kMaxLevel));
-}
-
-TEST(S2CellId, MaximumTile) {
-  // This method is tested more thoroughly in s2cellunion_test.cc.
-  for (int iter = 0; iter < 1000; ++iter) {
-    S2CellId id = S2Testing::GetRandomCellId(10);
-
-    // Check that "limit" is returned for tiles at or beyond "limit".
-    EXPECT_EQ(id, id.maximum_tile(id));
-    EXPECT_EQ(id, id.child(0).maximum_tile(id));
-    EXPECT_EQ(id, id.child(1).maximum_tile(id));
-    EXPECT_EQ(id, id.next().maximum_tile(id));
-    EXPECT_EQ(id.child(0), id.maximum_tile(id.child(0)));
-
-    // Check that the tile size is increased when possible.
-    EXPECT_EQ(id, id.child(0).maximum_tile(id.next()));
-    EXPECT_EQ(id, id.child(0).maximum_tile(id.next().child(0)));
-    EXPECT_EQ(id, id.child(0).maximum_tile(id.next().child(1).child(0)));
-    EXPECT_EQ(id, id.child(0).child(0).maximum_tile(id.next()));
-    EXPECT_EQ(id, id.child(0).child(0).child(0).maximum_tile(id.next()));
-
-    // Check that the tile size is decreased when necessary.
-    EXPECT_EQ(id.child(0), id.maximum_tile(id.child(0).next()));
-    EXPECT_EQ(id.child(0), id.maximum_tile(id.child(0).next().child(0)));
-    EXPECT_EQ(id.child(0), id.maximum_tile(id.child(0).next().child(1)));
-    EXPECT_EQ(id.child(0).child(0),
-              id.maximum_tile(id.child(0).child(0).next()));
-    EXPECT_EQ(id.child(0).child(0).child(0),
-              id.maximum_tile(id.child(0).child(0).child(0).next()));
-
-    // Check that the tile size is otherwise unchanged.
-    EXPECT_EQ(id, id.maximum_tile(id.next()));
-    EXPECT_EQ(id, id.maximum_tile(id.next().child(0)));
-    EXPECT_EQ(id, id.maximum_tile(id.next().child(1).child(0)));
-  }
-}
-
-TEST(S2CellId, GetCommonAncestorLevel) {
-  // Two identical cell ids.
-  EXPECT_EQ(0, S2CellId::FromFace(0).
-            GetCommonAncestorLevel(S2CellId::FromFace(0)));
-  EXPECT_EQ(30, S2CellId::FromFace(0).child_begin(30).
-            GetCommonAncestorLevel(S2CellId::FromFace(0).child_begin(30)));
-
-  // One cell id is a descendant of the other.
-  EXPECT_EQ(0, S2CellId::FromFace(0).child_begin(30).
-            GetCommonAncestorLevel(S2CellId::FromFace(0)));
-  EXPECT_EQ(0, S2CellId::FromFace(5).
-            GetCommonAncestorLevel(S2CellId::FromFace(5).child_end(30).prev()));
-
-  // Two cells that have no common ancestor.
-  EXPECT_EQ(-1, S2CellId::FromFace(0).
-            GetCommonAncestorLevel(S2CellId::FromFace(5)));
-  EXPECT_EQ(-1, S2CellId::FromFace(2).child_begin(30).
-            GetCommonAncestorLevel(S2CellId::FromFace(3).child_end(20)));
-
-  // Two cells that have a common ancestor distinct from both of them.
-  EXPECT_EQ(8, S2CellId::FromFace(5).child_begin(9).next().child_begin(15).
-            GetCommonAncestorLevel(
-                S2CellId::FromFace(5).child_begin(9).child_begin(20)));
-  EXPECT_EQ(1, S2CellId::FromFace(0).child_begin(2).child_begin(30).
-            GetCommonAncestorLevel(
-                S2CellId::FromFace(0).child_begin(2).next().child_begin(5)));
 }
 
 TEST(S2CellId, Inverses) {
@@ -275,25 +160,16 @@ TEST(S2CellId, Tokens) {
     string token = id.ToToken();
     EXPECT_LE(token.size(), 16);
     EXPECT_EQ(S2CellId::FromToken(token), id);
-    EXPECT_EQ(S2CellId::FromToken(token.data(), token.size()), id);
   }
   // Check that invalid cell ids can be encoded.
   string token = S2CellId::None().ToToken();
   EXPECT_EQ(S2CellId::FromToken(token), S2CellId::None());
-  EXPECT_EQ(S2CellId::FromToken(token.data(), token.size()), S2CellId::None());
-
-  // Check that supplying tokens with non-alphanumeric characters
-  // returns S2CellId::None().
-  EXPECT_EQ(S2CellId::FromToken("876b e99"), S2CellId::None());
-  EXPECT_EQ(S2CellId::FromToken("876bee99\n"), S2CellId::None());
-  EXPECT_EQ(S2CellId::FromToken("876[ee99"), S2CellId::None());
-  EXPECT_EQ(S2CellId::FromToken(" 876bee99"), S2CellId::None());
 }
 
 
 static const int kMaxExpandLevel = 3;
 
-static void ExpandCell(S2CellId parent, vector<S2CellId>* cells,
+static void ExpandCell(S2CellId const& parent, vector<S2CellId>* cells,
                        hash_map<S2CellId, S2CellId>* parent_map) {
   cells->push_back(parent);
   if (parent.level() == kMaxExpandLevel) return;
@@ -303,22 +179,15 @@ static void ExpandCell(S2CellId parent, vector<S2CellId>* cells,
 
   S2CellId child = parent.child_begin();
   for (int pos = 0; child != parent.child_end(); child = child.next(), ++pos) {
-    (*parent_map)[child] = parent;
-    // Do some basic checks on the children.
+    // Do some basic checks on the children
     EXPECT_EQ(parent.child(pos), child);
-    EXPECT_EQ(pos, child.child_position());
-    // Test child_position(level) on all the child's ancestors.
-    for (S2CellId ancestor = child; ancestor.level() >= 1;
-         ancestor = (*parent_map)[ancestor]) {
-      EXPECT_EQ(ancestor.child_position(),
-                child.child_position(ancestor.level()));
-    }
-    EXPECT_EQ(pos, child.child_position(child.level()));
     EXPECT_EQ(child.level(), parent.level() + 1);
     EXPECT_FALSE(child.is_leaf());
     int child_orientation;
     EXPECT_EQ(child.ToFaceIJOrientation(&i, &j, &child_orientation), face);
     EXPECT_EQ(child_orientation, orientation ^ S2::kPosToOrientation[pos]);
+
+    (*parent_map)[child] = parent;
     ExpandCell(child, cells, parent_map);
   }
 }
@@ -328,7 +197,7 @@ TEST(S2CellId, Containment) {
   hash_map<S2CellId, S2CellId> parent_map;
   vector<S2CellId> cells;
   for (int face = 0; face < 6; ++face) {
-    ExpandCell(S2CellId::FromFace(face), &cells, &parent_map);
+    ExpandCell(S2CellId::FromFacePosLevel(face, 0, 0), &cells, &parent_map);
   }
   for (int i = 0; i < cells.size(); ++i) {
     for (int j = 0; j < cells.size(); ++j) {
@@ -389,7 +258,7 @@ TEST(S2CellId, Coverage) {
   }
 }
 
-static void TestAllNeighbors(S2CellId id, int level) {
+static void TestAllNeighbors(S2CellId const& id, int level) {
   DCHECK_GE(level, id.level());
   DCHECK_LT(level, S2CellId::kMaxLevel);
 
@@ -405,10 +274,10 @@ static void TestAllNeighbors(S2CellId id, int level) {
     c.AppendVertexNeighbors(level, &expected);
   }
   // Sort the results and eliminate duplicates.
-  std::sort(all.begin(), all.end());
-  std::sort(expected.begin(), expected.end());
-  all.erase(std::unique(all.begin(), all.end()), all.end());
-  expected.erase(std::unique(expected.begin(), expected.end()), expected.end());
+  sort(all.begin(), all.end());
+  sort(expected.begin(), expected.end());
+  all.erase(unique(all.begin(), all.end()), all.end());
+  expected.erase(unique(expected.begin(), expected.end()), expected.end());
   EXPECT_EQ(expected, all);
 }
 
@@ -416,32 +285,16 @@ TEST(S2CellId, Neighbors) {
   // Check the edge neighbors of face 1.
   static int out_faces[] = { 5, 3, 2, 0 };
   S2CellId face_nbrs[4];
-  S2CellId::FromFace(1).GetEdgeNeighbors(face_nbrs);
+  S2CellId::FromFacePosLevel(1, 0, 0).GetEdgeNeighbors(face_nbrs);
   for (int i = 0; i < 4; ++i) {
     EXPECT_TRUE(face_nbrs[i].is_face());
     EXPECT_EQ(face_nbrs[i].face(), out_faces[i]);
   }
 
-  // Check the edge neighbors of the corner cells at all levels.  This case is
-  // trickier because it requires projecting onto adjacent faces.
-  static int const kMaxIJ = S2CellId::kMaxSize - 1;
-  for (int level = 1; level <= S2CellId::kMaxLevel; ++level) {
-    S2CellId id = S2CellId::FromFaceIJ(1, 0, 0).parent(level);
-    S2CellId nbrs[4];
-    id.GetEdgeNeighbors(nbrs);
-    // These neighbors were determined manually using the face and axis
-    // relationships defined in s2.cc.
-    int size_ij = S2CellId::GetSizeIJ(level);
-    EXPECT_EQ(S2CellId::FromFaceIJ(5, kMaxIJ, kMaxIJ).parent(level), nbrs[0]);
-    EXPECT_EQ(S2CellId::FromFaceIJ(1, size_ij, 0).parent(level), nbrs[1]);
-    EXPECT_EQ(S2CellId::FromFaceIJ(1, 0, size_ij).parent(level), nbrs[2]);
-    EXPECT_EQ(S2CellId::FromFaceIJ(0, kMaxIJ, 0).parent(level), nbrs[3]);
-  }
-
   // Check the vertex neighbors of the center of face 2 at level 5.
   vector<S2CellId> nbrs;
   S2CellId::FromPoint(S2Point(0, 0, 1)).AppendVertexNeighbors(5, &nbrs);
-  std::sort(nbrs.begin(), nbrs.end());
+  sort(nbrs.begin(), nbrs.end());
   for (int i = 0; i < 4; ++i) {
     EXPECT_EQ(nbrs[i], S2CellId::FromFaceIJ(
                  2, (1 << 29) - (i < 2), (1 << 29) - (i == 0 || i == 3))
@@ -452,11 +305,11 @@ TEST(S2CellId, Neighbors) {
   // Check the vertex neighbors of the corner of faces 0, 4, and 5.
   S2CellId id = S2CellId::FromFacePosLevel(0, 0, S2CellId::kMaxLevel);
   id.AppendVertexNeighbors(0, &nbrs);
-  std::sort(nbrs.begin(), nbrs.end());
+  sort(nbrs.begin(), nbrs.end());
   EXPECT_EQ(nbrs.size(), 3);
-  EXPECT_EQ(nbrs[0], S2CellId::FromFace(0));
-  EXPECT_EQ(nbrs[1], S2CellId::FromFace(4));
-  EXPECT_EQ(nbrs[2], S2CellId::FromFace(5));
+  EXPECT_EQ(nbrs[0], S2CellId::FromFacePosLevel(0, 0, 0));
+  EXPECT_EQ(nbrs[1], S2CellId::FromFacePosLevel(4, 0, 0));
+  EXPECT_EQ(nbrs[2], S2CellId::FromFacePosLevel(5, 0, 0));
 
   // Check that AppendAllNeighbors produces results that are consistent
   // with AppendVertexNeighbors for a bunch of random cells.
@@ -474,20 +327,20 @@ TEST(S2CellId, Neighbors) {
 
 TEST(S2CellId, OutputOperator) {
   S2CellId cell(0xbb04000000000000ULL);
-  std::ostringstream s;
+  ostringstream s;
   s << cell;
   EXPECT_EQ("5/31200", s.str());
 }
 
 TEST(S2CellId, ToPointBenchmark) {
   // This "test" is really a benchmark, so skip it unless we're optimized.
-  if (google::DEBUG_MODE) return;
+  if (DEBUG_MODE) return;
 
   // Test speed of conversions from points to leaf cells.
   double control_start = S2Testing::GetCpuTime();
   S2CellId begin = S2CellId::Begin(S2CellId::kMaxLevel);
   S2CellId end = S2CellId::End(S2CellId::kMaxLevel);
-  uint64 delta = (end.id() - begin.id()) / FLAGS_iters;
+  uint64 delta = (begin.id() - end.id()) / FLAGS_iters;
   delta &= ~static_cast<uint64>(1);  // Make sure all ids are leaf cells.
 
   S2CellId id = begin;
@@ -525,7 +378,7 @@ TEST(S2CellId, ToPointBenchmark) {
 
 TEST(S2CellId, FromPointBenchmark) {
   // This "test" is really a benchmark, so skip it unless we're optimized.
-  if (google::DEBUG_MODE) return;
+  if (DEBUG_MODE) return;
 
   // The sample points follow a spiral curve that completes one revolution
   // around the z-axis every 1/dt samples.  The z-coordinate increases
@@ -559,4 +412,66 @@ TEST(S2CellId, FromPointBenchmark) {
   double test_time = S2Testing::GetCpuTime() - test_start - control_time;
   printf("\tFromPoint:  %8.3f usecs\n", 1e6 * test_time / FLAGS_iters);
   EXPECT_NE(isum, 0);  // Don't let the loop get optimized away.
+}
+
+TEST(S2CellId, HtmBenchmark) {
+  // This "test" is really a benchmark, so skip it unless we're optimized.
+  if (DEBUG_MODE) return;
+
+  // The HTM methods are about 100 times slower than the S2CellId methods,
+  // so we adjust the number of iterations accordingly.
+  int htm_iters = FLAGS_iters / 100;
+
+  SpatialVector start(1, 0, -4);
+  double dz = (-2 * start.z()) / htm_iters;
+  double dt = 1.37482937133e-4;
+
+  double test_start = S2Testing::GetCpuTime();
+  uint64 mem_start = MemoryUsage(0);
+  MallocInterface* mi = MallocInterface::instance();
+  size_t heap_start, heap_end;
+  CHECK(mi->GetNumericProperty("generic.current_allocated_bytes", &heap_start));
+  SpatialIndex htm(FLAGS_htm_level, FLAGS_build_level);
+  double constructor_time = S2Testing::GetCpuTime() - test_start;
+  printf("\tHTM constructor time:  %12.3f ms\n", 1e3 * constructor_time);
+  printf("\tHTM heap size increase:   %9lld\n", MemoryUsage(0) - mem_start);
+  CHECK(mi->GetNumericProperty("generic.current_allocated_bytes", &heap_end));
+  printf("\tHTM heap bytes allocated: %9u\n", heap_end - heap_start);
+
+  test_start = S2Testing::GetCpuTime();
+  double sum = 0;
+  SpatialVector v = start;
+  for (int i = htm_iters; i > 0; --i) {
+    v.set(v.x() - dt * v.y(), v.y() + dt * v.x(), v.z() + dz);
+    sum += v.x();
+  }
+  double htm_control = S2Testing::GetCpuTime() - test_start;
+  printf("\tHTM Control:   %8.3f usecs\n", 1e6 * htm_control / htm_iters);
+  EXPECT_NE(sum, 0);  // Don't let the loop get optimized away.
+
+  // Keeping the returned ids in a vector adds a negligible amount of time
+  // to the idByPoint test and makes it much easier to test pointById.
+  vector<uint64> ids(htm_iters);
+  test_start = S2Testing::GetCpuTime();
+  v = start;
+  for (int i = htm_iters; i > 0; --i) {
+    v.set(v.x() - dt * v.y(), v.y() + dt * v.x(), v.z() + dz);
+    ids[i-1] = htm.idByPoint(v);
+  }
+  double idByPoint_time = S2Testing::GetCpuTime() - test_start - htm_control;
+  printf("\tHTM FromPoint: %8.3f usecs\n",
+          1e6 * idByPoint_time / htm_iters);
+
+  test_start = S2Testing::GetCpuTime();
+  sum = 0;
+  v = start;
+  for (int i = htm_iters; i > 0; --i) {
+    SpatialVector v2;
+    htm.pointById(v2, ids[i-1]);
+    sum += v2.x();
+  }
+  double pointById_time = S2Testing::GetCpuTime() - test_start;
+  printf("\tHTM ToPoint:   %8.3f usecs\n",
+          1e6 * pointById_time / htm_iters);
+  EXPECT_NE(sum, 0);  // Don't let the loop get optimized away.
 }

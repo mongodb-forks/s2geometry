@@ -1,0 +1,6 @@
+base/logging.cc:#include "mongo/logger/logger.h"
+base/logging.cc:#include "mongo/logger/log_severity.h"
+base/logging.cc:#include "mongo/logger/logstream_builder.h"
+base/logging.cc:#include "mongo/util/assert_util.h"
+base/logging.cc:#include "mongo/util/concurrency/thread_name.h"
+base/logging.cc:#include "mongo/util/log.h"

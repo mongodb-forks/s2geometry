@@ -1,29 +1,8 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
-
+#include "s2.h"
+#include "base/logging.h"
+#include "strings/stringprintf.h"
 #include "s2latlng.h"
-
-#include <algorithm>
-#include <ostream>
-
-#include <glog/logging.h>
-#include "base/stringprintf.h"
-
-using std::max;
-using std::min;
 
 S2LatLng S2LatLng::Normalized() const {
   // remainder(x, 2 * M_PI) reduces its argument to the range [-M_PI, M_PI]
@@ -33,8 +12,7 @@ S2LatLng S2LatLng::Normalized() const {
 }
 
 S2Point S2LatLng::ToPoint() const {
-  DLOG_IF(ERROR, !is_valid())
-      << "Invalid S2LatLng in S2LatLng::ToPoint: " << *this;
+  DCHECK(is_valid());
   // As of crosstool v14, gcc tries to calculate sin(phi), cos(phi),
   // sin(theta), cos(theta) on the following section by two sincos()
   // calls. However, for some inputs, sincos() returns significantly
@@ -53,8 +31,7 @@ S2Point S2LatLng::ToPoint() const {
 S2LatLng::S2LatLng(S2Point const& p)
   : coords_(Latitude(p).radians(), Longitude(p).radians()) {
   // The latitude and longitude are already normalized.
-  DLOG_IF(ERROR, !is_valid())
-      << "Invalid S2LatLng in constructor: " << *this;
+  DCHECK(is_valid());
 }
 
 S1Angle S2LatLng::GetDistance(S2LatLng const& o) const {
@@ -68,12 +45,8 @@ S1Angle S2LatLng::GetDistance(S2LatLng const& o) const {
   // distance that way (which gives about 15 digits of accuracy for all
   // distances).
 
-  DLOG_IF(ERROR, !is_valid())
-      << "Invalid S2LatLng in S2LatLng::GetDistance: " << *this;
-
-  DLOG_IF(ERROR, !o.is_valid())
-      << "Invalid S2LatLng in S2LatLng::GetDistance: " << o;
-
+  DCHECK(is_valid());
+  DCHECK(o.is_valid());
   double lat1 = lat().radians();
   double lat2 = o.lat().radians();
   double lng1 = lng().radians();
@@ -81,7 +54,7 @@ S1Angle S2LatLng::GetDistance(S2LatLng const& o) const {
   double dlat = sin(0.5 * (lat2 - lat1));
   double dlng = sin(0.5 * (lng2 - lng1));
   double x = dlat * dlat + dlng * dlng * cos(lat1) * cos(lat2);
-  return S1Angle::Radians(2 * asin(sqrt(min(1.0, x))));
+  return S1Angle::Radians(2 * atan2(sqrt(x), sqrt(max(0.0, 1.0 - x))));
 }
 
 string S2LatLng::ToStringInDegrees() const {
@@ -93,6 +66,6 @@ void S2LatLng::ToStringInDegrees(string* s) const {
   *s = ToStringInDegrees();
 }
 
-std::ostream& operator<<(std::ostream& os, S2LatLng const& ll) {
+ostream& operator<<(ostream& os, S2LatLng const& ll) {
   return os << "[" << ll.lat() << ", " << ll.lng() << "]";
 }

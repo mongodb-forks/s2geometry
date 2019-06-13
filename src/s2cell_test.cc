@@ -1,56 +1,29 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2cell.h"
 
-#include <float.h>
-#include <math.h>
-#include <stdio.h>
-#include <algorithm>
+#include <cstdio>
 #include <map>
-#include <utility>
-#include <vector>
+using std::map;
+using std::multimap;
 
-#include <glog/logging.h>
-#include "base/macros.h"
-#include "base/stringprintf.h"
-#include "gtest/gtest.h"
-#include "r2.h"
-#include "r2rect.h"
-#include "s1angle.h"
-#include "s1chordangle.h"
-#include "s1interval.h"
+#include <vector>
+using std::vector;
+
+
+#include "base/commandlineflags.h"
+#include "base/logging.h"
+#include "testing/base/public/gunit.h"
 #include "s2.h"
 #include "s2cap.h"
-#include "s2edgeutil.h"
-#include "s2latlng.h"
 #include "s2latlngrect.h"
-#include "s2loop.h"
 #include "s2testing.h"
-
-using std::map;
-using std::max;
-using std::min;
-using std::vector;
 
 TEST(S2Cell, TestFaces) {
   map<S2Point, int> edge_counts;
   map<S2Point, int> vertex_counts;
   for (int face = 0; face < 6; ++face) {
-    S2CellId id = S2CellId::FromFace(face);
+    S2CellId id = S2CellId::FromFacePosLevel(face, 0, 0);
     S2Cell cell(id);
     EXPECT_EQ(id, cell.id());
     EXPECT_EQ(face, cell.face());
@@ -233,26 +206,19 @@ static void TestSubdivide(S2Cell const& cell) {
     }
 
     // Check all children for the first few levels, and then sample randomly.
-    // We also always subdivide the cells containing a few chosen points so
-    // that we have a better chance of sampling the minimum and maximum metric
-    // values.  kMaxSizeUV is the absolute value of the u- and v-coordinate
-    // where the cell size at a given level is maximal.
-    double const kMaxSizeUV = 0.3964182625366691;
-    R2Point const special_uv[] = {
-      R2Point(DBL_EPSILON, DBL_EPSILON),  // Face center
-      R2Point(DBL_EPSILON, 1),            // Edge midpoint
-      R2Point(1, 1),                      // Face corner
-      R2Point(kMaxSizeUV, kMaxSizeUV),    // Largest cell area
-      R2Point(DBL_EPSILON, kMaxSizeUV),   // Longest edge/diagonal
-    };
+    // Also subdivide one corner cell, one edge cell, and one center cell
+    // so that we have a better chance of sample the minimum metric values.
     bool force_subdivide = false;
-    for (int k = 0; k < ARRAYSIZE(special_uv); ++k) {
-      if (children[i].GetBoundUV().Contains(special_uv[k]))
+    S2Point center = S2::GetNorm(children[i].face());
+    S2Point edge = center + S2::GetUAxis(children[i].face());
+    S2Point corner = edge + S2::GetVAxis(children[i].face());
+    for (int j = 0; j < 4; ++j) {
+      S2Point p = children[i].GetVertexRaw(j);
+      if (p == center || p == edge || p == corner)
         force_subdivide = true;
     }
-    if (force_subdivide ||
-        cell.level() < (google::DEBUG_MODE ? 5 : 6) ||
-        S2Testing::rnd.OneIn(google::DEBUG_MODE ? 5 : 4)) {
+    if (force_subdivide || cell.level() < (DEBUG_MODE ? 5 : 6) ||
+        S2Testing::rnd.OneIn(DEBUG_MODE ? 5 : 4)) {
       TestSubdivide(children[i]);
     }
   }
@@ -317,10 +283,9 @@ static void CheckMinMaxAvg(
 }
 
 TEST(S2Cell, TestSubdivide) {
-  // Only test a sample of faces to reduce the runtime.
-  TestSubdivide(S2Cell::FromFace(0));
-  TestSubdivide(S2Cell::FromFace(3));
-  TestSubdivide(S2Cell::FromFace(5));
+  for (int face = 0; face < 6; ++face) {
+    TestSubdivide(S2Cell::FromFacePosLevel(face, 0, 0));
+  }
 
   // The maximum edge *ratio* is the ratio of the longest edge of any cell to
   // the shortest edge of any cell at the same level (and similarly for the
@@ -384,7 +349,7 @@ TEST(S2Cell, TestSubdivide) {
   }
 }
 
-static int const kMaxLevel = google::DEBUG_MODE ? 6 : 11;
+static int const kMaxLevel = DEBUG_MODE ? 6 : 11;
 
 static void ExpandChildren1(S2Cell const& cell) {
   S2Cell children[4];
@@ -406,87 +371,12 @@ static void ExpandChildren2(S2Cell const& cell) {
 
 TEST(S2Cell, TestPerformance) {
   double subdivide_start = S2Testing::GetCpuTime();
-  ExpandChildren1(S2Cell::FromFace(0));
+  ExpandChildren1(S2Cell::FromFacePosLevel(0, 0, 0));
   double subdivide_time = S2Testing::GetCpuTime() - subdivide_start;
   fprintf(stderr, "Subdivide: %.3f seconds\n", subdivide_time);
 
   double constructor_start = S2Testing::GetCpuTime();
-  ExpandChildren2(S2Cell::FromFace(0));
+  ExpandChildren2(S2Cell::FromFacePosLevel(0, 0, 0));
   double constructor_time = S2Testing::GetCpuTime() - constructor_start;
   fprintf(stderr, "Constructor: %.3f seconds\n", constructor_time);
-}
-
-TEST(S2Cell, CellVsLoopRectBound) {
-  // This test verifies that the S2Cell and S2Loop bounds contain each other
-  // to within their maximum errors.
-  //
-  // The S2Cell and S2Loop calculations for the latitude of a vertex can differ
-  // by up to 2 * DBL_EPSILON, therefore the S2Cell bound should never exceed
-  // the S2Loop bound by more than this (the reverse is not true, because the
-  // S2Loop code sometimes thinks that the maximum occurs along an edge).
-  // Similarly, the longitude bounds can differ by up to 4 * DBL_EPSILON since
-  // the S2Cell bound has an error of 2 * DBL_EPSILON and then expands by this
-  // amount, while the S2Loop bound does no expansion at all.
-
-  // Possible additional S2Cell error compared to S2Loop error:
-  static S2LatLng kCellError = S2LatLng::FromRadians(2 * DBL_EPSILON,
-                                                     4 * DBL_EPSILON);
-  // Possible additional S2Loop error compared to S2Cell error:
-  static S2LatLng kLoopError = S2EdgeUtil::RectBounder::MaxErrorForTests();
-
-  for (int iter = 0; iter < 1000; ++iter) {
-    S2Cell cell(S2Testing::GetRandomCellId());
-    S2Loop loop(cell);
-    S2LatLngRect cell_bound = cell.GetRectBound();
-    S2LatLngRect loop_bound = loop.GetRectBound();
-    EXPECT_TRUE(loop_bound.Expanded(kCellError).Contains(cell_bound));
-    EXPECT_TRUE(cell_bound.Expanded(kLoopError).Contains(loop_bound));
-  }
-}
-
-TEST(S2Cell, RectBoundIsLargeEnough) {
-  // Construct many points that are nearly on an S2Cell edge, and verify that
-  // whenever the cell contains a point P then its bound contains S2LatLng(P).
-
-  for (int iter = 0; iter < 1000; /* advanced in loop below */) {
-    S2Cell cell(S2Testing::GetRandomCellId());
-    int i1 = S2Testing::rnd.Uniform(4);
-    int i2 = (i1 + 1) & 3;
-    S2Point v1 = cell.GetVertex(i1);
-    S2Point v2 = S2Testing::SamplePoint(
-        S2Cap(cell.GetVertex(i2), S1Angle::Radians(1e-15)));
-    S2Point p = S2EdgeUtil::Interpolate(S2Testing::rnd.RandDouble(), v1, v2);
-    if (S2Loop(cell).Contains(p)) {
-      EXPECT_TRUE(cell.GetRectBound().Contains(S2LatLng(p)));
-      ++iter;
-    }
-  }
-}
-
-static S1ChordAngle GetDistanceBruteForce(S2Cell const& cell,
-                                          S2Point const& target) {
-  if (cell.Contains(target)) return S1ChordAngle::Zero();
-  S1ChordAngle min_distance = S1ChordAngle::Infinity();
-  for (int i = 0; i < 4; ++i) {
-    S2EdgeUtil::UpdateMinDistance(target, cell.GetVertex(i),
-                                  cell.GetVertex((i + 1) & 3), &min_distance);
-  }
-  return min_distance;
-}
-
-TEST(S2Cell, GetDistance) {
-  S2Testing::rnd.Reset(FLAGS_s2_random_seed);
-  for (int iter = 0; iter < 1000; ++iter) {
-    SCOPED_TRACE(StringPrintf("Iteration %d", iter));
-    S2Cell cell(S2Testing::GetRandomCellId());
-    S2Point target = S2Testing::RandomPoint();
-    S1Angle expected = GetDistanceBruteForce(cell, target).ToAngle();
-    S1Angle actual = cell.GetDistance(target).ToAngle();
-    // The error has a peak near Pi/2 for edge distance, and another peak near
-    // Pi for vertex distance.
-    EXPECT_NEAR(expected.radians(), actual.radians(), 1e-12);
-    if (expected.radians() <= M_PI / 3) {
-      EXPECT_NEAR(expected.radians(), actual.radians(), 1e-15);
-    }
-  }
 }

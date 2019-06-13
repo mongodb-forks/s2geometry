@@ -1,178 +1,98 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2LOOP_H__
 #define UTIL_GEOMETRY_S2LOOP_H__
 
-#include <math.h>
-#include <stddef.h>
-#include <bitset>
 #include <map>
+using std::map;
+using std::multimap;
+
 #include <vector>
+using std::vector;
 
-#include "base/integral_types.h"
-#include <glog/logging.h>
+
+#include "base/logging.h"
 #include "base/macros.h"
-#include "s1angle.h"
-#include "s2.h"
-#include "s2edgeutil.h"
-#include "s2latlngrect.h"
+#include "s2edgeindex.h"
 #include "s2region.h"
-#include "s2shapeindex.h"
-#include "util/math/vector3.h"
+#include "s2latlngrect.h"
+#include "s2edgeutil.h"
 
-class Decoder;
-class Encoder;
-class LoopCrosser;
-class LoopRelation;
-class MergingIterator;
-class S2Cap;
-class S2Cell;
-class S2EdgeQuery;
-class S2Error;
 class S2Loop;
-class S2XYZFaceSiTi;
+// Defined in the cc file. A helper class for AreBoundariesCrossing.
+class WedgeProcessor;
+
+// Indexing structure to efficiently compute intersections.
+class S2LoopIndex: public S2EdgeIndex {
+ public:
+  explicit S2LoopIndex(S2Loop const* loop): loop_(loop) {}
+  virtual ~S2LoopIndex() {}
+
+  // There is no need to overwrite Reset(), as the only data that's
+  // used to implement this class is all contained in the loop data.
+  // void Reset();
+
+  virtual S2Point const* edge_from(int index) const;
+  virtual S2Point const* edge_to(int index) const;
+  virtual int num_edges() const;
+
+ private:
+  S2Loop const* loop_;
+};
 
 // An S2Loop represents a simple spherical polygon.  It consists of a single
 // chain of vertices where the first vertex is implicitly connected to the
-// last. All loops are defined to have a CCW orientation, i.e. the interior of
-// the loop is on the left side of the edges.  This implies that a clockwise
-// loop enclosing a small area is interpreted to be a CCW loop enclosing a
-// very large area.
+// last.  All loops are defined to have a CCW orientation, i.e. the interior
+// of the polygon is on the left side of the edges.  This implies that a
+// clockwise loop enclosing a small area is interpreted to be a CCW loop
+// enclosing a very large area.
 //
 // Loops are not allowed to have any duplicate vertices (whether adjacent or
 // not), and non-adjacent edges are not allowed to intersect.  Loops must have
-// at least 3 vertices (except for the "empty" and "full" loops discussed
-// below).  Although these restrictions are not enforced in optimized code,
-// you may get unexpected results if they are violated.
+// at least 3 vertices.  Although these restrictions are not enforced in
+// optimized code, you may get unexpected results if they are violated.
 //
-// There are two special loops: the "empty" loop contains no points, while the
-// "full" loop contains all points.  These loops do not have any edges, but to
-// preserve the invariant that every loop can be represented as a vertex
-// chain, they are defined as having exactly one vertex each (see kEmpty and
-// kFull).
+// Point containment is defined such that if the sphere is subdivided into
+// faces (loops), every point is contained by exactly one face.  This implies
+// that loops do not necessarily contain all (or any) of their vertices.
 //
-// Point containment of loops is defined such that if the sphere is subdivided
-// into faces (loops), every point is contained by exactly one face.  This
-// implies that loops do not necessarily contain their vertices.
+// TODO(user): When doing operations on two loops, always create the
+// edgeindex for the bigger of the two.  Same for polygons.
 class S2Loop : public S2Region {
  public:
-  // Default constructor.  The loop must be initialized by calling Init() or
-  // Decode() before it is used.
+  // Create an empty S2Loop that should be initialized by calling Init() or
+  // Decode().
   S2Loop();
 
   // Convenience constructor that calls Init() with the given vertices.
-  explicit S2Loop(std::vector<S2Point> const& vertices);
+  explicit S2Loop(vector<S2Point> const& vertices);
 
-  // Convenience constructor to disable the automatic validity checking
-  // controlled by the --s2debug flag.  Example:
-  //
-  //   S2Loop* loop = new S2Loop(vertices, DISABLE_S2DEBUG);
-  //
-  // This is equivalent to:
-  //
-  //   S2Loop* loop = new S2Loop;
-  //   loop->set_s2debug_override(DISABLE_S2DEBUG);
-  //   loop->Init(vertices);
-  //
-  // The main reason to use this constructor is if you intend to call
-  // IsValid() explicitly.  See set_s2debug_override() for details.
-  S2Loop(std::vector<S2Point> const& vertices, S2debugOverride override);
+  // Initialize a loop connecting the given vertices.  The last vertex is
+  // implicitly connected to the first.  All points should be unit length.
+  // Loops must have at least 3 vertices.
+  void Init(vector<S2Point> const& vertices);
 
-  // Initialize a loop with given vertices.  The last vertex is implicitly
-  // connected to the first.  All points should be unit length.  Loops must
-  // have at least 3 vertices (except for the "empty" and "full" loops, see
-  // kEmpty and kFull).  This method may be called multiple times.
-  void Init(std::vector<S2Point> const& vertices);
+  // This parameter should be removed as soon as people stop using the
+  // deprecated version of IsValid.
+  static int const kDefaultMaxAdjacent = 0;
 
-  // A special vertex chain of length 1 that creates an empty loop (i.e., a
-  // loop with no edges that contains no points).  Example usage:
-  //
-  //    S2Loop empty(S2Loop::kEmpty());
-  //
-  // The loop may be safely encoded lossily (e.g. by snapping it to an S2Cell
-  // center) as long as its position does not move by 90 degrees or more.
-  inline static std::vector<S2Point> kEmpty();
+  // Check whether this loop is valid.  Note that in debug mode, validity
+  // is checked at loop creation time, so IsValid()
+  // should always return true.
+  // If err is not NULL, output errors into it.
+  bool IsValid(string* err = NULL) const;
 
-  // A special vertex chain of length 1 that creates a full loop (i.e., a loop
-  // with no edges that contains all points).  See kEmpty() for details.
-  inline static std::vector<S2Point> kFull();
 
-  // Construct a loop corresponding to the given cell.
-  //
-  // Note that the loop and cell *do not* contain exactly the same set of
-  // points, because S2Loop and S2Cell have slightly different definitions of
-  // point containment.  For example, an S2Cell vertex is contained by all
-  // four neighboring S2Cells, but it is contained by exactly one of four
-  // S2Loops constructed from those cells.  As another example, the S2Cell
-  // coverings of "cell" and "S2Loop(cell)" will be different, because the
-  // loop contains points on its boundary that actually belong to other cells
-  // (i.e., the covering will include a layer of neighboring cells).
+  // These two versions are deprecated and ignore max_adjacent.
+  // DEPRECATED.
+  static bool IsValid(vector<S2Point> const& vertices, int max_adjacent);
+  // DEPRECATED.
+  bool IsValid(int max_adjacent) const;
+
+  // Initialize a loop corresponding to the given cell.
   explicit S2Loop(S2Cell const& cell);
 
   ~S2Loop();
-
-  // Allows overriding the automatic validity checks controlled by the
-  // --s2debug flag.  If this flag is true, then loops are automatically
-  // checked for validity as they are initialized.  The main reason to disable
-  // this flag is if you intend to call IsValid() explicitly, like this:
-  //
-  //   S2Loop loop;
-  //   loop.set_s2debug_override(DISABLE_S2DEBUG);
-  //   loop.Init(...);
-  //   if (!loop.IsValid()) { ... }
-  //
-  // Without the call to set_s2debug_override(), invalid data would cause a
-  // fatal error in Init() whenever the --s2debug flag is enabled.
-  //
-  // This setting is preserved across calls to Init() and Decode().
-  void set_s2debug_override(S2debugOverride override);
-  S2debugOverride s2debug_override() const;
-
-  // Returns true if this is a valid loop.  Note that validity is checked
-  // automatically during initialization when --s2debug is enabled (true by
-  // default in debug binaries).
-  bool IsValid() const;
-
-  // Returns true if this is *not* a valid loop and sets "error"
-  // appropriately.  Otherwise returns false and leaves "error" unchanged.
-  //
-  // REQUIRES: error != NULL
-  bool FindValidationError(S2Error* error) const;
-
-  int num_vertices() const { return num_vertices_; }
-
-  // For convenience, we make two entire copies of the vertex list available:
-  // vertex(n..2*n-1) is mapped to vertex(0..n-1), where n == num_vertices().
-  S2Point const& vertex(int i) const {
-    DCHECK_GE(i, 0);
-    DCHECK_LT(i, (2 * num_vertices_));
-    int j = i - num_vertices();
-    if (j < 0) j = i;
-    return vertices_[j];
-  }
-
-  // Return true if this is the special "empty" loop that contains no points.
-  inline bool is_empty() const;
-
-  // Return true if this is the special "full" loop that contains all points.
-  inline bool is_full() const;
-
-  // Return true if this loop is either "empty" or "full".
-  inline bool is_empty_or_full() const;
 
   // The depth of a loop is defined as its nesting level within its containing
   // polygon.  "Outer shell" loops have depth 0, holes within those loops have
@@ -187,6 +107,17 @@ class S2Loop : public S2Region {
   // The sign of a loop is -1 if the loop represents a hole in its containing
   // polygon, and +1 otherwise.
   int sign() const { return is_hole() ? -1 : 1; }
+
+  int num_vertices() const { return num_vertices_; }
+
+  // For convenience, we make two entire copies of the vertex list available:
+  // vertex(n..2*n-1) is mapped to vertex(0..n-1), where n == num_vertices().
+  S2Point const& vertex(int i) const {
+    DCHECK_GE(i, 0);
+    DCHECK_LT(i, (2 * num_vertices_));
+    int j = i - num_vertices();
+    return vertices_[j >= 0 ? j : i];
+  }
 
   // Return true if the loop area is at most 2*Pi.  Degenerate loops are
   // handled consistently with S2::RobustCCW(), i.e., if a loop can be
@@ -231,30 +162,6 @@ class S2Loop : public S2Region {
   // This quantity is also called the "geodesic curvature" of the loop.
   double GetTurningAngle() const;
 
-  // Return the maximum error in GetTurningAngle().  The return value is not
-  // constant; it depends on the loop.
-  double GetTurningAngleMaxError() const;
-
-  // Return the distance from the given point to the loop interior.  If the
-  // loop is empty, return S1Angle::Infinity().  "x" should be unit length.
-  S1Angle GetDistance(S2Point const& x) const;
-
-  // Return the distance from the given point to the loop boundary.  If the
-  // loop is empty or full, return S1Angle::Infinity() (since the loop has no
-  // boundary).  "x" should be unit length.
-  S1Angle GetDistanceToBoundary(S2Point const& x) const;
-
-  // If the given point is contained by the loop, return it.  Otherwise return
-  // the closest point on the loop boundary.  If the loop is empty, return the
-  // input argument.  Note that the result may or may not be contained by the
-  // loop.  "x" should be unit length.
-  S2Point Project(S2Point const& x) const;
-
-  // Return the closest point on the loop boundary to the given point.  If the
-  // loop is empty or full, return the input argument (since the loop has no
-  // boundary).  "x" should be unit length.
-  S2Point ProjectToBoundary(S2Point const& x) const;
-
   // Return true if the region contained by this loop is a superset of the
   // region contained by the given other loop.
   bool Contains(S2Loop const* b) const;
@@ -263,9 +170,25 @@ class S2Loop : public S2Region {
   // contained by the given other loop.
   bool Intersects(S2Loop const* b) const;
 
+  // Given two loops of a polygon (see s2polygon.h for requirements), return
+  // true if A contains B.  This version of Contains() is much cheaper since
+  // it does not need to check whether the boundaries of the two loops cross.
+  bool ContainsNested(S2Loop const* b) const;
+
+  // Return +1 if A contains B (i.e. the interior of B is a subset of the
+  // interior of A), -1 if the boundaries of A and B cross, and 0 otherwise.
+  // Requires that A does not properly contain the complement of B, i.e.
+  // A and B do not contain each other's boundaries.  This method is used
+  // for testing whether multi-loop polygons contain each other.
+  //
+  // WARNING: there is a bug in this function - it does not detect loop
+  // crossings in certain situations involving shared edges.  CL 2926852 works
+  // around this bug for polygon intersection, but it probably effects other
+  // tests.  TODO: fix ContainsOrCrosses() and revert CL 2926852.
+  int ContainsOrCrosses(S2Loop const* b) const;
+
   // Return true if two loops have the same boundary.  This is true if and
-  // only if the loops have the same vertices in the same cyclic order.  The
-  // empty and full loops are considered to have different boundaries.
+  // only if the loops have the same vertices in the same cyclic order.
   // (For testing purposes.)
   bool BoundaryEquals(S2Loop const* b) const;
 
@@ -313,23 +236,12 @@ class S2Loop : public S2Region {
   T GetSurfaceIntegral(T f_tri(S2Point const&, S2Point const&, S2Point const&))
       const;
 
-  // Returns a vector of points shaped as a regular polygon with
-  // num_vertices vertices, all on a circle of the specified angular
-  // radius around the center.  The radius is the actual distance from
-  // the center to the circle along the sphere.
-  static S2Loop* MakeRegularLoop(S2Point const& center,
-                                 S1Angle radius,
-                                 int num_vertices);
-
-
   ////////////////////////////////////////////////////////////////////////
   // S2Region interface (see s2region.h for details):
 
+  // GetRectBound() is guaranteed to return exact results, while GetCapBound()
+  // is conservative.
   virtual S2Loop* Clone() const;
-
-  // GetRectBound() returns essentially tight results, while GetCapBound()
-  // might have a lot of extra padding.  Both bounds are conservative in that
-  // if the loop contains a point P, then the bound contains P also.
   virtual S2Cap GetCapBound() const;
   virtual S2LatLngRect GetRectBound() const { return bound_; }
 
@@ -342,163 +254,28 @@ class S2Loop : public S2Region {
   // The point 'p' does not need to be normalized.
   bool Contains(S2Point const& p) const;
 
-  // Generally clients should not use S2Loop::Encode().  Instead they should
-  // encode an S2Polygon, which unlike this method supports (lossless)
-  // compression.
-  //
-  // REQUIRES: the loop is initialized and valid.
   virtual void Encode(Encoder* const encoder) const;
-
-  // Decode a loop encoded with Encode() or EncodeCompressed().  These methods
-  // may be called with loops that have already been initialized.
   virtual bool Decode(Decoder* const decoder);
   virtual bool DecodeWithinScope(Decoder* const decoder);
 
-  ////////////////////////////////////////////////////////////////////////
-  // Methods intended primarily for use by the S2Polygon implementation:
-
-  // Given two loops of a polygon, return true if A contains B.  This version
-  // of Contains() is cheap because it does not test for edge intersections.
-  // The loops must meet all the S2Polygon requirements; for example this
-  // implies that their boundaries may not cross or have any shared edges
-  // (although they may have shared vertices).
-  bool ContainsNested(S2Loop const* b) const;
-
-  // Return +1 if A contains the boundary of B, -1 if A excludes the boundary
-  // of B, and 0 if the boundaries of A and B cross.  Shared edges are handled
-  // as follows: If XY is a shared edge, define Reversed(XY) to be true if XY
-  // appears in opposite directions in A and B.  Then A contains XY if and
-  // only if Reversed(XY) == B->is_hole().  (Intuitively, this checks whether
-  // A contains a vanishingly small region extending from the boundary of B
-  // toward the interior of the polygon to which loop B belongs.)
-  //
-  // This method is used for testing containment and intersection of
-  // multi-loop polygons.  Note that this method is not symmetric, since the
-  // result depends on the direction of loop A but not on the direction of
-  // loop B (in the absence of shared edges).
-  //
-  // REQUIRES: neither loop is empty.
-  // REQUIRES: if b->is_full(), then !b->is_hole().
-  int CompareBoundary(S2Loop const* b) const;
-
-  // Given two loops whose boundaries do not cross (see CompareBoundary),
-  // return true if A contains the boundary of B.  If "reverse_b" is true, the
-  // boundary of B is reversed first (which only affects the result when there
-  // are shared edges).  This method is cheaper than CompareBoundary() because
-  // it does not test for edge intersections.
-  //
-  // REQUIRES: neither loop is empty.
-  // REQUIRES: if b->is_full(), then reverse_b == false.
-  bool ContainsNonCrossingBoundary(S2Loop const* b, bool reverse_b) const;
-
-  // Wrapper class that can be used to index a loop or set of loops
-  // (see S2ShapeIndex).  Once it is inserted into an S2ShapeIndex it is owned
-  // by that index.  (You can override Release() to change this behavior).
-  // Note that the loop itself is still owned by the caller.
-#ifndef SWIG
-  class Shape : public S2Shape {
-   public:
-    explicit Shape(S2Loop const* loop) : loop_(loop) {}
-    S2Loop const* loop() const { return loop_; }
-
-    int num_edges() const {
-      return loop_->is_empty_or_full() ? 0 : loop_->num_vertices();
-    }
-    void GetEdge(int i, S2Point const** a, S2Point const** b) const {
-      *a = &loop_->vertex(i);
-      *b = &loop_->vertex(i+1);
-    }
-    bool has_interior() const { return true; }
-    bool contains_origin() const { return loop_->contains_origin(); }
-    void Release() const { delete this; }
-
-   protected:
-    S2Loop const* loop_;
-  };
-#endif  // SWIG
-
  private:
-  // All of the following need access to contains_origin().  Possibly this
-  // method should be public.
-  friend class Shape;
-  friend class S2Polygon;
-  friend class S2Stats;
-  friend class S2LoopTestBase;
-  friend class LoopCrosser;
-
   // Internal constructor used only by Clone() that makes a deep copy of
   // its argument.
   explicit S2Loop(S2Loop const* src);
 
-  // Return true if this loop contains S2::Origin().
-  bool contains_origin() const { return origin_inside_; }
-
-  // The single vertex in the "empty loop" vertex chain.
-  inline static S2Point kEmptyVertex();
-
-  // The single vertex in the "full loop" vertex chain.
-  inline static S2Point kFullVertex();
-
-  void InitOriginAndBound();
+  void InitOrigin();
   void InitBound();
-  void InitIndex();
-
-  // A version of Contains(S2Point) that does not use the S2ShapeIndex.
-  // Used by the S2Polygon implementation.
-  bool BruteForceContains(S2Point const& p) const;
-
-  // Like FindValidationError(), but skips any checks that would require
-  // building the S2ShapeIndex (i.e., self-intersection tests).  This is used
-  // by the S2Polygon implementation, which uses its own index to check for
-  // loop self-intersections.
-  bool FindValidationErrorNoIndex(S2Error* error) const;
 
   // Internal implementation of the Decode and DecodeWithinScope methods above.
   // If within_scope is true, memory is allocated for vertices_ and data
-  // is copied from the decoder using std::copy. If it is false, vertices_
+  // is copied from the decoder using memcpy. If it is false, vertices_
   // will point to the memory area inside the decoder, and the field
   // owns_vertices_ is set to false.
-  bool DecodeInternal(Decoder* const decoder, bool within_scope);
-
-  // Converts the loop vertices to the S2XYZFaceSiTi format and store the result
-  // in the given array, which must be large enough to store all the vertices.
-  void GetXYZFaceSiTiVertices(S2XYZFaceSiTi* vertices) const;
-
-  // Encode the loop's vertices using S2EncodePointsCompressed.  Uses
-  // approximately 8 bytes for the first vertex, going down to less than 4 bytes
-  // per vertex on Google's geographic repository, plus 24 bytes per vertex that
-  // does not correspond to the center of a cell at level 'snap_level'. The loop
-  // vertices must first be converted to the S2XYZFaceSiTi format with
-  // GetXYZFaceSiTiVertices.
-  //
-  // REQUIRES: the loop is initialized and valid.
-  void EncodeCompressed(Encoder* encoder, S2XYZFaceSiTi const* vertices,
-                        int snap_level) const;
-
-  // Decode a loop encoded with EncodeCompressed. The parameters must be the
-  // same as the one used when EncodeCompressed was called.
-  bool DecodeCompressed(Decoder* decoder, int snap_level);
-
-  // Returns a bitset of properties used by EncodeCompressed
-  // to efficiently encode boolean values.  Properties are
-  // origin_inside and whether the bound was encoded.
-  std::bitset<2> GetCompressedEncodingProperties() const;
+  bool DecodeInternal(Decoder* const decoder,
+                      bool within_scope);
 
   // Internal implementation of the Intersects() method above.
   bool IntersectsInternal(S2Loop const* b) const;
-
-  // Given an iterator that is already positioned at the S2ShapeIndexCell
-  // containing "p", returns Contains(p).
-  bool Contains(S2ShapeIndex::Iterator const& it, S2Point const& p) const;
-
-  // Return true if the loop boundary intersects "target".  It may also
-  // return true when the loop boundary does not intersect "target" but
-  // some edge comes within the worst-case error tolerance.
-  //
-  // REQUIRES: it.id().contains(target.id())
-  // [This condition is true whenever it.Locate(target) returns INDEXED.]
-  bool BoundaryApproxIntersects(S2ShapeIndex::Iterator const& it,
-                                S2Cell const& target) const;
 
   // Return an index "first" and a direction "dir" (either +1 or -1) such that
   // the vertex sequence (first, first+dir, ..., first+(n-1)*dir) does not
@@ -512,30 +289,26 @@ class S2Loop : public S2Region {
   // The return value is in the range 1..num_vertices_ if found.
   int FindVertex(S2Point const& p) const;
 
-  // This method checks all edges of loop A for intersection against all edges
-  // of loop B.  If there is any shared vertex, the wedges centered at this
-  // vertex are sent to "relation".
+  // This method checks all edges of this loop (A) for intersection
+  // against all edges of B.  If there is any shared vertex , the
+  // wedges centered at this vertex are sent to wedge_processor.
   //
-  // If the two loop boundaries cross, this method is guaranteed to return
-  // true.  It also returns true in certain cases if the loop relationship is
-  // equivalent to crossing.  For example, if the relation is Contains() and a
-  // point P is found such that B contains P but A does not contain P, this
-  // method will return true to indicate that the result is the same as though
-  // a pair of crossing edges were found (since Contains() returns false in
-  // both cases).
+  // Returns true only when the edges intersect in the sense of
+  // S2EdgeUtil::RobustCrossing, returns false immediately when the
+  // wedge_processor returns true: this means the wedge processor
+  // knows the value of the property that the caller wants to compute,
+  // and no further inspection is needed.  For instance, if the
+  // property is "loops intersect", then a wedge intersection is all
+  // it takes to return true.
   //
-  // See Contains(), Intersects() and CompareBoundary() for the three uses of
-  // this function.
-  static bool HasCrossingRelation(S2Loop const& a, S2Loop const& b,
-                                  LoopRelation* relation);
+  // See Contains(), Intersects() and ContainsOrCrosses() for the
+  // three uses of this function.
+  bool AreBoundariesCrossing(
+      S2Loop const* b, WedgeProcessor* wedge_processor) const;
 
-  // When the loop is modified (Invert(), or Init() called again) then the
-  // indexing structures need to be deleted as they become invalid.
+  // When the loop is modified (the only cae being Invert() at this time),
+  // the indexing structures need to be deleted as they become invalid.
   void ResetMutableFields();
-
-  // The nesting depth, if this field belongs to an S2Polygon.  We define it
-  // here to optimize field packing.
-  int depth_;
 
   // We store the vertices in an array rather than a vector because we don't
   // need any STL methods, and computing the number of vertices using size()
@@ -547,72 +320,22 @@ class S2Loop : public S2Region {
   S2Point* vertices_;
   bool owns_vertices_;
 
-  uint8 s2debug_override_;  // Store enum in 1 byte rather than 4.
-  bool origin_inside_;      // Does the loop contains S2::Origin()?
-
-  // In general we build the index the first time it is needed, but we make an
-  // exception for Contains(S2Point) because this method has a simple brute
-  // force implementation that is also relatively cheap.  For this one method
-  // we keep track of the number of calls made and only build the index once
-  // enough calls have been made that we think an index would be worthwhile.
-  mutable Atomic32 unindexed_contains_calls_;
-
-  // "bound_" is a conservative bound on all points contained by this loop:
-  // if A.Contains(P), then A.bound_.Contains(S2LatLng(P)).
   S2LatLngRect bound_;
+  bool origin_inside_;
+  int depth_;
 
-  // Since "bound_" is not exact, it is possible that a loop A contains
-  // another loop B whose bounds are slightly larger.  "subregion_bound_"
-  // has been expanded sufficiently to account for this error, i.e.
-  // if A.Contains(B), then A.subregion_bound_.Contains(B.bound_).
-  S2LatLngRect subregion_bound_;
+  // Quadtree index structure of this loop's edges.
+  mutable S2LoopIndex index_;
 
-  // Every S2Loop has a "shape_" member that is used to index the loop.  This
-  // shape belongs to the S2Loop and does not need to be freed separately.
-#ifndef SWIG
-  class BuiltinShape : public Shape {
-   public:
-    explicit BuiltinShape(S2Loop const* loop) : Shape(loop) {}
-    void Release() const { /*owned by the S2Loop*/ }
-  };
-#endif  // SWIG
-  BuiltinShape shape_;
+  // Map for speeding up FindVertex: We will compute a map from vertex to
+  // index in the vertex array as soon as there has been enough calls.
+  mutable int num_find_vertex_calls_;
+  mutable map<S2Point, int> vertex_to_index_;
 
-  // Spatial index for this loop.
-  S2ShapeIndex index_;
-
-  DISALLOW_COPY_AND_ASSIGN(S2Loop);
+  DISALLOW_EVIL_CONSTRUCTORS(S2Loop);
 };
 
-
 //////////////////// Implementation Details Follow ////////////////////////
-
-
-// Any single-vertex loop is interpreted as being either the empty loop or the
-// full loop, depending on whether the vertex is in the northern or southern
-// hemisphere respectively.
-inline S2Point S2Loop::kEmptyVertex() { return S2Point(0, 0, 1); }
-inline S2Point S2Loop::kFullVertex() { return S2Point(0, 0, -1); }
-
-inline std::vector<S2Point> S2Loop::kEmpty() {
-  return std::vector<S2Point>(1, kEmptyVertex());
-}
-
-inline std::vector<S2Point> S2Loop::kFull() {
-  return std::vector<S2Point>(1, kFullVertex());
-}
-
-inline bool S2Loop::is_empty() const {
-  return is_empty_or_full() && !contains_origin();
-}
-
-inline bool S2Loop::is_full() const {
-  return is_empty_or_full() && contains_origin();
-}
-
-inline bool S2Loop::is_empty_or_full() const {
-  return num_vertices() == 1;
-}
 
 // Since this method is templatized and public, the implementation needs to be
 // in the .h file.

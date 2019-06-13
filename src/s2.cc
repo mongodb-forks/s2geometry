@@ -1,128 +1,94 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2.h"
 
-#include <float.h>
-#include <gflags/gflags.h>
-#include <glog/logging.h>
-#include "util/bits/bits.h"
-#include "s1angle.h"
-#include "util/math/exactfloat/exactfloat.h"
-#include "util/math/matrix3x3.h"
-
-using std::max;
-using std::min;
+#include "base/integral_types.h"
+#include "base/logging.h"
+#include "util/math/matrix3x3-inl.h"
+#include "util/math/vector2-inl.h"
 
 // Define storage for header file constants (the values are not needed
 // here for integral constants).
-int const S2::kMaxCellLevel;
-int const S2::kSwapMask;
-int const S2::kInvertMask;
-int const S2::kLimitIJ;
-unsigned int const S2::kMaxSiTi;
 
-// kMaxDetError is the maximum error in computing (AxB).C where all vectors
-// are unit length.  Using standard inequalities, it can be shown that
-//
-//  fl(AxB) = AxB + D where |D| <= (|AxB| + (2/sqrt(3))*|A|*|B|) * e
-//
-// where "fl()" denotes a calculation done in floating-point arithmetic,
-// |x| denotes either absolute value or the L2-norm as appropriate, and
-// e = 0.5*DBL_EPSILON.  Similarly,
-//
-//  fl(B.C) = B.C + d where |d| <= (|B.C| + 2*|B|*|C|) * e .
-//
-// Applying these bounds to the unit-length vectors A,B,C and neglecting
-// relative error (which does not affect the sign of the result), we get
-//
-//  fl((AxB).C) = (AxB).C + d where |d| <= (3 + 2/sqrt(3)) * e
-//
-// which is about 4.1548 * e, or 2.0774 * DBL_EPSILON.
-double const S2::kMaxDetError = 2.0774 * DBL_EPSILON;
-
-int const S2::kFaceUVWFaces[6][3][2] = {
-  { { 4, 1 }, { 5, 2 }, { 3, 0 } },
-  { { 0, 3 }, { 5, 2 }, { 4, 1 } },
-  { { 0, 3 }, { 1, 4 }, { 5, 2 } },
-  { { 2, 5 }, { 1, 4 }, { 0, 3 } },
-  { { 2, 5 }, { 3, 0 }, { 1, 4 } },
-  { { 4, 1 }, { 3, 0 }, { 2, 5 } }
-};
-
-double const S2::kFaceUVWAxes[6][3][3] = {
-  {
-    { 0,  1,  0 },
-    { 0,  0,  1 },
-    { 1,  0,  0 }
-  },
-  {
-    {-1,  0,  0 },
-    { 0,  0,  1 },
-    { 0,  1,  0 }
-  },
-  {
-    {-1,  0,  0 },
-    { 0, -1,  0 },
-    { 0,  0,  1 }
-  },
-  {
-    { 0,  0, -1 },
-    { 0, -1,  0 },
-    {-1,  0,  0 }
-  },
-  {
-    { 0,  0, -1 },
-    { 1,  0,  0 },
-    { 0, -1,  0 }
-  },
-  {
-    { 0,  1,  0 },
-    { 1,  0,  0 },
-    { 0,  0, -1 }
-  }
-};
+int const S2::kSwapMask = 0x01;
+int const S2::kInvertMask = 0x02;
+int const S2::kMaxCellLevel = 30;
+double const S2::kMaxDetError = 0.8e-15;  // 14 * (2**-54)
+// Enable debugging checks in s2 code?
+bool const S2::debug = DEBUG_MODE;
 
 COMPILE_ASSERT(S2::kSwapMask == 0x01 && S2::kInvertMask == 0x02,
                masks_changed);
 
-DEFINE_bool(s2debug, !!google::DEBUG_MODE,
-            "Enable debugging checks in s2 code");
+static const uint32 MIX32 = 0x12b9b0a1UL;
 
-S2Point S2::FaceXYZtoUVW(int face, S2Point const& p) {
-  // The result coordinates are simply the dot products of P with the (u,v,w)
-  // axes for the given face (see kFaceUVWAxes).
-  switch (face) {
-    case 0:  return S2Point( p.y(),  p.z(),  p.x());
-    case 1:  return S2Point(-p.x(),  p.z(),  p.y());
-    case 2:  return S2Point(-p.x(), -p.y(),  p.z());
-    case 3:  return S2Point(-p.z(), -p.y(), -p.x());
-    case 4:  return S2Point(-p.z(),  p.x(), -p.y());
-    default: return S2Point( p.y(),  p.x(), -p.z());
-  }
+
+HASH_NAMESPACE_START
+// The hash function due to Bob Jenkins (see
+// http://burtleburtle.net/bob/hash/index.html).
+static inline void mix(uint32& a, uint32& b, uint32& c) {     // 32bit version
+  a -= b; a -= c; a ^= (c>>13);
+  b -= c; b -= a; b ^= (a<<8);
+  c -= a; c -= b; c ^= (b>>13);
+  a -= b; a -= c; a ^= (c>>12);
+  b -= c; b -= a; b ^= (a<<16);
+  c -= a; c -= b; c ^= (b>>5);
+  a -= b; a -= c; a ^= (c>>3);
+  b -= c; b -= a; b ^= (a<<10);
+  c -= a; c -= b; c ^= (b>>15);
 }
 
+inline uint32 CollapseZero(uint32 bits) {
+  // IEEE 754 has two representations for zero, positive zero and negative
+  // zero.  These two values compare as equal, and therefore we need them to
+  // hash to the same value.
+  //
+  // We handle this by simply clearing the top bit of every 32-bit value,
+  // which clears the sign bit on both big-endian and little-endian
+  // architectures.  This creates some additional hash collisions between
+  // points that differ only in the sign of their components, but this is
+  // rarely a problem with real data.
+  //
+  // The obvious alternative is to explicitly map all occurrences of positive
+  // zero to negative zero (or vice versa), but this is more expensive and
+  // makes the average case slower.
+  //
+  // We also mask off the low-bit because we've seen differences in
+  // some floating point operations (specifically 'fcos' on i386)
+  // between different implementations of the same architecure
+  // (e.g. 'Xeon 5345' vs. 'Opteron 270').  It's unknown how many bits
+  // of mask are sufficient to cover real world cases, but the intent
+  // is to be as conservative as possible in discarding bits.
+
+  return bits & 0x7ffffffe;
+}
+
+size_t makeHash(S2Point const& p) {
+  // This function is significantly faster than calling HashTo32().
+  uint32 const* data = reinterpret_cast<uint32 const*>(p.Data());
+  DCHECK_EQ((6 * sizeof(*data)), sizeof(p));
+
+  // We call CollapseZero() on every 32-bit chunk to avoid having endian
+  // dependencies.
+  uint32 a = CollapseZero(data[0]);
+  uint32 b = CollapseZero(data[1]);
+  uint32 c = CollapseZero(data[2]) + 0x12b9b0a1UL;  // An arbitrary number
+  mix(a, b, c);
+  a += CollapseZero(data[3]);
+  b += CollapseZero(data[4]);
+  c += CollapseZero(data[5]);
+  mix(a, b, c);
+  return c;
+}
+
+size_t hash<S2Point>::operator()(S2Point const& p) const {
+  return makeHash(p);
+}
+
+HASH_NAMESPACE_END
+
 bool S2::IsUnitLength(S2Point const& p) {
-  // Normalize() is guaranteed to return a vector whose L2-norm differs from 1
-  // by less than 2 * DBL_EPSILON.  Thus the squared L2-norm differs by less
-  // than 4 * DBL_EPSILON.  The actual calculated Norm2() can have up to 1.5 *
-  // DBL_EPSILON of additional error.  The total error of 5.5 * DBL_EPSILON
-  // can then be rounded down since the result must be a representable
-  // double-precision value.
-  return fabs(p.Norm2() - 1) <= 5 * DBL_EPSILON;  // About 1.11e-15
+  return fabs(p.Norm2() - 1) <= 1e-15;
 }
 
 S2Point S2::Ortho(S2Point const& a) {
@@ -155,39 +121,11 @@ S2Point S2::FromFrame(Matrix3x3_d const& m, S2Point const& q) {
   return m * q;
 }
 
-S2Point S2::Rotate(S2Point const& p, S2Point const& axis, S1Angle angle) {
-  DCHECK(IsUnitLength(p));
-  DCHECK(IsUnitLength(axis));
-  // Let M be the plane through P that is perpendicular to "axis", and let
-  // "center" be the point where M intersects "axis".  We construct a
-  // right-handed orthogonal frame (dx, dy, center) such that "dx" is the
-  // vector from "center" to P, and "dy" has the same length as "dx".  The
-  // result can then be expressed as (cos(angle)*dx + sin(angle)*dy + center).
-  S2Point center = p.DotProd(axis) * axis;
-  S2Point dx = p - center;
-  S2Point dy = axis.CrossProd(p);
-  // Mathematically the result is unit length, but normalization is necessary
-  // to ensure that numerical errors don't accumulate.
-  return (cos(angle) * dx + sin(angle) * dy + center).Normalize();
-}
-
 bool S2::ApproxEquals(S2Point const& a, S2Point const& b, double max_error) {
   return a.Angle(b) <= max_error;
 }
 
-bool S2::PointsApproxEqual(S2Point const* a, int num_a,
-                           S2Point const* b, int num_b,
-                           double max_error) {
-  if (num_a != num_b) return false;
-  for (int i = 0; i < num_a; ++i) {
-    if (!S2::ApproxEquals(a[i], b[i], max_error)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-Vector3_d S2::RobustCrossProd(S2Point const& a, S2Point const& b) {
+S2Point S2::RobustCrossProd(S2Point const& a, S2Point const& b) {
   // The direction of a.CrossProd(b) becomes unstable as (a + b) or (a - b)
   // approaches zero.  This leads to situations where a.CrossProd(b) is not
   // very orthogonal to "a" and/or "b".  We could fix this using Gram-Schmidt,
@@ -202,7 +140,7 @@ Vector3_d S2::RobustCrossProd(S2Point const& a, S2Point const& b) {
 
   DCHECK(IsUnitLength(a));
   DCHECK(IsUnitLength(b));
-  Vector3_d x = (b + a).CrossProd(b - a);
+  S2Point x = (b + a).CrossProd(b - a);
   if (x != S2Point(0, 0, 0)) return x;
 
   // The only result that makes sense mathematically is to return zero, but
@@ -230,128 +168,66 @@ int S2::RobustCCW(S2Point const& a, S2Point const& b, S2Point const& c) {
   return RobustCCW(a, b, c, a.CrossProd(b));
 }
 
-// ExpensiveCCW() uses arbitrary-precision arithmetic and the "simulation of
-// simplicity" technique in order to be completely robust (i.e., to return
-// consistent results for all possible inputs).
-//
+// Below we define two versions of ExpensiveCCW().  The first version uses
+// arbitrary-precision arithmetic (MPFloat) and the "simulation of simplicity"
+// technique.  It is completely robust (i.e., it returns consistent results
+// for all possible inputs).  The second version uses normal double-precision
+// arithmetic.  It is numerically stable and handles many degeneracies well,
+// but it is not perfectly robust.  It exists mainly for testing purposes, so
+// that we can verify that certain tests actually require the more advanced
+// techniques implemented by the first version.
+
+#undef SIMULATION_OF_SIMPLICITY
+#ifdef SIMULATION_OF_SIMPLICITY
+
 // Below we define a floating-point type with enough precision so that it can
 // represent the exact determinant of any 3x3 matrix of floating-point
-// numbers.  It uses ExactFloat, which is based on the OpenSSL Bignum library
-// and therefore has a permissive BSD-style license.  (At one time we also
-// supported an option based on MPFR, but that has an LGPL license and is
-// therefore not suited for some applications.)
+// numbers.  We support two options: MPFloat (which is based on MPFR and is
+// therefore subject to an LGPL license) and ExactFloat (which is based on the
+// OpenSSL Bignum library and therefore has a permissive BSD-style license).
+
+#ifdef S2_USE_EXACTFLOAT
+
+// ExactFloat only supports exact calculations with floating-point numbers.
+#include "util/math/exactfloat/exactfloat.h"
+
+#else  // S2_USE_EXACTFLOAT
+
+// MPFloat requires a "maximum precision" to be specified.
+//
+// To figure out how much precision we need, first observe that any double
+// precision number can be represented as an integer by multiplying it by
+// 2**1074.  This is because the minimum exponent is -1022, and denormalized
+// numbers have 52 bits after the leading "0".  On the other hand, the largest
+// double precision value has the form 1.x * (2**1023), which is a 1024-bit
+// integer.  Therefore any double precision value can be represented as a
+// (1074 + 1024) = 2098 bit integer.
+//
+// A 3x3 determinant is computed by adding together 6 values, each of which is
+// the product of 3 of the input values.  When an m-bit integer is multiplied
+// by an n-bit integer, the result has at most (m+n) bits.  When "k" m-bit
+// integers are added together, the result has at most m + ceil(log2(k)) bits.
+// Therefore the determinant of any 3x3 matrix can be represented exactly
+// using no more than (3*2098)+3 = 6297 bits.
+//
+// Note that MPFloat only uses as much precision as required to compute the
+// exact result, and that typically far fewer bits of precision are used.  The
+// worst-case estimate above is only achieved for a matrix where every row
+// contains both the maximum and minimum possible double precision values
+// (i.e. approximately 1e308 and 1e-323).  For randomly chosen unit-length
+// vectors, the average case uses only about 200 bits of precision.
+
+// The maximum precision must be at least (6297 + 1) so that we can assert
+// that the result of the determinant calculation is exact (by checking that
+// the actual precision of the result is less than the maximum precision
+// specified).
+
+#include "util/math/mpfloat/mpfloat.h"
+typedef MPFloat<6300> ExactFloat;
+
+#endif  // S2_USE_EXACTFLOAT
 
 typedef Vector3<ExactFloat> Vector3_xf;
-
-int S2::ExpensiveCCW(S2Point const& a, S2Point const& b, S2Point const& c) {
-  // Return zero if and only if two points are the same.  This ensures (1).
-  if (a == b || b == c || c == a) return 0;
-
-  // Next we try recomputing the determinant still using floating-point
-  // arithmetic but in a more precise way.  This is more expensive than the
-  // simple calculation done by TriageCCW(), but it is still *much* cheaper
-  // than using arbitrary-precision arithmetic.  This optimization is able to
-  // compute the correct determinant sign in virtually all cases except when
-  // the three points are truly collinear (e.g., three points on the equator).
-  int det_sign = StableCCW(a, b, c);
-  if (det_sign != 0) return det_sign;
-
-  // Otherwise fall back to exact arithmetic and symbolic permutations.
-  return ExactCCW(a, b, c);
-}
-
-// Compute the determinant in a numerically stable way.  Unlike TriageCCW(),
-// this method can usually compute the correct determinant sign even when all
-// three points are as collinear as possible.  For example if three points are
-// spaced 1km apart along a random line on the Earth's surface using the
-// nearest representable points, there is only a 0.4% chance that this method
-// will not be able to find the determinant sign.  The probability of failure
-// decreases as the points get closer together; if the collinear points are
-// 1 meter apart, the failure rate drops to 0.0004%.
-//
-// This method could be extended to also handle nearly-antipodal points (and
-// in fact an earlier version of this code did exactly that), but antipodal
-// points are rare in practice so it seems better to simply fall back to
-// exact arithmetic in that case.
-int S2::StableCCW(S2Point const& a, S2Point const& b, S2Point const& c) {
-  Vector3_d ab = b - a;
-  Vector3_d bc = c - b;
-  Vector3_d ca = a - c;
-  double ab2 = ab.Norm2();
-  double bc2 = bc.Norm2();
-  double ca2 = ca.Norm2();
-
-  // Now compute the determinant ((A-C)x(B-C)).C, where the vertices have been
-  // cyclically permuted if necessary so that AB is the longest edge.  (This
-  // minimizes the magnitude of cross product.)  At the same time we also
-  // compute the maximum error in the determinant.  Using a similar technique
-  // to the one used for kMaxDetError, the error is at most
-  //
-  //   |d| <= (3 + 6/sqrt(3)) * |A-C| * |B-C| * e
-  //
-  // where e = 0.5 * DBL_EPSILON.  If the determinant magnitude is larger than
-  // this value then we know its sign with certainty.
-  double const kDetErrorMultiplier = 3.2321 * DBL_EPSILON;  // see above
-  double det, max_error;
-  if (ab2 >= bc2 && ab2 >= ca2) {
-    // AB is the longest edge, so compute (A-C)x(B-C).C.
-    det = -(ca.CrossProd(bc).DotProd(c));
-    max_error = kDetErrorMultiplier * sqrt(ca2 * bc2);
-  } else if (bc2 >= ca2) {
-    // BC is the longest edge, so compute (B-A)x(C-A).A.
-    det = -(ab.CrossProd(ca).DotProd(a));
-    max_error = kDetErrorMultiplier * sqrt(ab2 * ca2);
-  } else {
-    // CA is the longest edge, so compute (C-B)x(A-B).B.
-    det = -(bc.CrossProd(ab).DotProd(b));
-    max_error = kDetErrorMultiplier * sqrt(bc2 * ab2);
-  }
-  return (fabs(det) <= max_error) ? 0 : (det > 0) ? 1 : -1;
-}
-
-// Forward declaration.
-static int SymbolicallyPerturbedCCW(
-    Vector3_xf const& a, Vector3_xf const& b,
-    Vector3_xf const& c, Vector3_xf const& b_cross_c);
-
-// Compute the determinant using exact arithmetic and/or symbolic
-// permutations.  Requires that the three points are distinct.
-int S2::ExactCCW(S2Point const& a, S2Point const& b, S2Point const& c) {
-  DCHECK(a != b && b != c && c != a);
-
-  // Sort the three points in lexicographic order, keeping track of the sign
-  // of the permutation.  (Each exchange inverts the sign of the determinant.)
-  int perm_sign = 1;
-  const S2Point *pa = &a, *pb = &b, *pc = &c;
-  using std::swap;
-  if (*pa > *pb) { swap(pa, pb); perm_sign = -perm_sign; }
-  if (*pb > *pc) { swap(pb, pc); perm_sign = -perm_sign; }
-  if (*pa > *pb) { swap(pa, pb); perm_sign = -perm_sign; }
-  DCHECK(*pa < *pb && *pb < *pc);
-
-  // Construct multiple-precision versions of the sorted points and compute
-  // their exact 3x3 determinant.
-  Vector3_xf xa = Vector3_xf::Cast(*pa);
-  Vector3_xf xb = Vector3_xf::Cast(*pb);
-  Vector3_xf xc = Vector3_xf::Cast(*pc);
-  Vector3_xf xb_cross_xc = xb.CrossProd(xc);
-  ExactFloat det = xa.DotProd(xb_cross_xc);
-
-  // The precision of ExactFloat is high enough that the result should always
-  // be exact (no rounding was performed).
-  DCHECK(!det.is_nan());
-  DCHECK_LT(det.prec(), det.max_prec());
-
-  // If the exact determinant is non-zero, we're done.
-  int det_sign = det.sgn();
-  if (det_sign == 0) {
-    // Otherwise, we need to resort to symbolic perturbations to resolve the
-    // sign of the determinant.
-    det_sign = SymbolicallyPerturbedCCW(xa, xb, xc, xb_cross_xc);
-  }
-  DCHECK(det_sign != 0);
-  return perm_sign * det_sign;
-}
 
 // The following function returns the sign of the determinant of three points
 // A, B, C under a model where every possible S2Point is slightly perturbed by
@@ -473,23 +349,173 @@ static int SymbolicallyPerturbedCCW(
   return 1;                                    // dc[2] * db[1] * da[0]
 }
 
+int S2::ExpensiveCCW(S2Point const& a, S2Point const& b, S2Point const& c) {
+  // Return zero if and only if two points are the same.  This ensures (1).
+  if (a == b || b == c || c == a) return 0;
+
+  // Sort the three points in lexicographic order, keeping track of the sign
+  // of the permutation.  (Each exchange inverts the sign of the determinant.)
+  int perm_sign = 1;
+  S2Point pa = a, pb = b, pc = c;
+  if (pa > pb) { swap(pa, pb); perm_sign = -perm_sign; }
+  if (pb > pc) { swap(pb, pc); perm_sign = -perm_sign; }
+  if (pa > pb) { swap(pa, pb); perm_sign = -perm_sign; }
+  DCHECK(pa < pb && pb < pc);
+
+  // Construct multiple-precision versions of the sorted points and compute
+  // their exact 3x3 determinant.
+  Vector3_xf xa = Vector3_xf::Cast(pa);
+  Vector3_xf xb = Vector3_xf::Cast(pb);
+  Vector3_xf xc = Vector3_xf::Cast(pc);
+  Vector3_xf xb_cross_xc = xb.CrossProd(xc);
+  ExactFloat det = xa.DotProd(xb_cross_xc);
+
+  // The precision of ExactFloat is high enough that the result should always
+  // be exact (no rounding was performed).
+  DCHECK(!det.is_nan());
+  DCHECK_LT(det.prec(), det.max_prec());
+
+  // If the exact determinant is non-zero, we're done.
+  int det_sign = det.sgn();
+  if (det_sign == 0) {
+    // Otherwise, we need to resort to symbolic perturbations to resolve the
+    // sign of the determinant.
+    det_sign = SymbolicallyPerturbedCCW(xa, xb, xc, xb_cross_xc);
+  }
+  DCHECK(det_sign != 0);
+  return perm_sign * det_sign;
+}
+
+#else  // SIMULATION_OF_SIMPLICITY
+
+static inline int PlanarCCW(Vector2_d const& a, Vector2_d const& b) {
+  // Return +1 if the edge AB is CCW around the origin, etc.
+  double sab = (a.DotProd(b) > 0) ? -1 : 1;
+  Vector2_d vab = a + sab * b;
+  double da = a.Norm2();
+  double db = b.Norm2();
+  double sign;
+  if (da < db || (da == db && a < b)) {
+    sign = a.CrossProd(vab) * sab;
+  } else {
+    sign = vab.CrossProd(b);
+  }
+  if (sign > 0) return 1;
+  if (sign < 0) return -1;
+  return 0;
+}
+
+static inline int PlanarOrderedCCW(Vector2_d const& a, Vector2_d const& b,
+                                   Vector2_d const& c) {
+  int sum = 0;
+  sum += PlanarCCW(a, b);
+  sum += PlanarCCW(b, c);
+  sum += PlanarCCW(c, a);
+  if (sum > 0) return 1;
+  if (sum < 0) return -1;
+  return 0;
+}
+
+int S2::ExpensiveCCW(S2Point const& a, S2Point const& b, S2Point const& c) {
+  // Return zero if and only if two points are the same.  This ensures (1).
+  if (a == b || b == c || c == a) return 0;
+
+  // Now compute the determinant in a stable way.  Since all three points are
+  // unit length and we know that the determinant is very close to zero, this
+  // means that points are very nearly collinear.  Furthermore, the most common
+  // situation is where two points are nearly identical or nearly antipodal.
+  // To get the best accuracy in this situation, it is important to
+  // immediately reduce the magnitude of the arguments by computing either
+  // A+B or A-B for each pair of points.  Note that even if A and B differ
+  // only in their low bits, A-B can be computed very accurately.  On the
+  // other hand we can't accurately represent an arbitrary linear combination
+  // of two vectors as would be required for Gaussian elimination.  The code
+  // below chooses the vertex opposite the longest edge as the "origin" for
+  // the calculation, and computes the different vectors to the other two
+  // vertices.  This minimizes the sum of the lengths of these vectors.
+  //
+  // This implementation is very stable numerically, but it still does not
+  // return consistent results in all cases.  For example, if three points are
+  // spaced far apart from each other along a great circle, the sign of the
+  // result will basically be random (although it will still satisfy the
+  // conditions documented in the header file).  The only way to return
+  // consistent results in all cases is to compute the result using
+  // multiple-precision arithmetic.  I considered using the Gnu MP library,
+  // but this would be very expensive (up to 2000 bits of precision may be
+  // needed to store the intermediate results) and seems like overkill for
+  // this problem.  The MP library is apparently also quite particular about
+  // compilers and compilation options and would be a pain to maintain.
+
+  // We want to handle the case of nearby points and nearly antipodal points
+  // accurately, so determine whether A+B or A-B is smaller in each case.
+  double sab = (a.DotProd(b) > 0) ? -1 : 1;
+  double sbc = (b.DotProd(c) > 0) ? -1 : 1;
+  double sca = (c.DotProd(a) > 0) ? -1 : 1;
+  S2Point vab = a + sab * b;
+  S2Point vbc = b + sbc * c;
+  S2Point vca = c + sca * a;
+  double dab = vab.Norm2();
+  double dbc = vbc.Norm2();
+  double dca = vca.Norm2();
+
+  // Sort the difference vectors to find the longest edge, and use the
+  // opposite vertex as the origin.  If two difference vectors are the same
+  // length, we break ties deterministically to ensure that the symmetry
+  // properties guaranteed in the header file will be true.
+  double sign;
+  if (dca < dbc || (dca == dbc && a < b)) {
+    if (dab < dbc || (dab == dbc && a < c)) {
+      // The "sab" factor converts A +/- B into B +/- A.
+      sign = vab.CrossProd(vca).DotProd(a) * sab;  // BC is longest edge
+    } else {
+      sign = vca.CrossProd(vbc).DotProd(c) * sca;  // AB is longest edge
+    }
+  } else {
+    if (dab < dca || (dab == dca && b < c)) {
+      sign = vbc.CrossProd(vab).DotProd(b) * sbc;  // CA is longest edge
+    } else {
+      sign = vca.CrossProd(vbc).DotProd(c) * sca;  // AB is longest edge
+    }
+  }
+  if (sign > 0) return 1;
+  if (sign < 0) return -1;
+
+  // The points A, B, and C are numerically indistinguishable from coplanar.
+  // This may be due to roundoff error, or the points may in fact be exactly
+  // coplanar.  We handle this situation by perturbing all of the points by a
+  // vector (eps, eps**2, eps**3) where "eps" is an infinitesmally small
+  // positive number (e.g. 1 divided by a googolplex).  The perturbation is
+  // done symbolically, i.e. we compute what would happen if the points were
+  // perturbed by this amount.  It turns out that this is equivalent to
+  // checking whether the points are ordered CCW around the origin first in
+  // the Y-Z plane, then in the Z-X plane, and then in the X-Y plane.
+
+  int ccw = PlanarOrderedCCW(Vector2_d(a.y(), a.z()), Vector2_d(b.y(), b.z()),
+                             Vector2_d(c.y(), c.z()));
+  if (ccw == 0) {
+    ccw = PlanarOrderedCCW(Vector2_d(a.z(), a.x()), Vector2_d(b.z(), b.x()),
+                           Vector2_d(c.z(), c.x()));
+    if (ccw == 0) {
+      ccw = PlanarOrderedCCW(Vector2_d(a.x(), a.y()), Vector2_d(b.x(), b.y()),
+                             Vector2_d(c.x(), c.y()));
+      // There are a few cases where "ccw" may still be zero despite our best
+      // efforts.  For example, two input points may be exactly proportional
+      // to each other (where both still satisfy IsNormalized()).
+    }
+  }
+  return ccw;
+}
+
+#endif  // SIMULATION_OF_SIMPLICITY
+
 double S2::Angle(S2Point const& a, S2Point const& b, S2Point const& c) {
-  // RobustCrossProd() is necessary to get good accuracy when two of the input
-  // points are very close together.
   return RobustCrossProd(a, b).Angle(RobustCrossProd(c, b));
 }
 
 double S2::TurnAngle(S2Point const& a, S2Point const& b, S2Point const& c) {
-  // We use RobustCrossProd() to get good accuracy when two points are very
-  // close together, and RobustCCW() to ensure that the sign is correct for
-  // turns that are close to 180 degrees.
-  //
-  // Unfortunately we can't save RobustCrossProd(a, b) and pass it as the
-  // optional 4th argument to RobustCCW(), because RobustCCW() requires
-  // a.CrossProd(b) exactly (the robust version differs in magnitude).
-  double angle = RobustCrossProd(a, b).Angle(RobustCrossProd(b, c));
-
-  // Don't return RobustCCW() * angle because it is legal to have (a == c).
+  // This is a bit less efficient because we compute all 3 cross products, but
+  // it ensures that TurnAngle(a,b,c) == -TurnAngle(c,b,a) for all a,b,c.
+  double angle = RobustCrossProd(b, a).Angle(RobustCrossProd(c, b));
   return (RobustCCW(a, b, c) > 0) ? angle : -angle;
 }
 
@@ -551,19 +577,19 @@ double S2::Area(S2Point const& a, S2Point const& b, S2Point const& c) {
 }
 
 double S2::GirardArea(S2Point const& a, S2Point const& b, S2Point const& c) {
-  // This is equivalent to the usual Girard's formula but is slightly more
-  // accurate, faster to compute, and handles a == b == c without a special
-  // case.  RobustCrossProd() is necessary to get good accuracy when two of
-  // the input points are very close together.
+  // This is equivalent to the usual Girard's formula but is slightly
+  // more accurate, faster to compute, and handles a == b == c without
+  // a special case.  The use of RobustCrossProd() makes it much more
+  // accurate when two vertices are nearly identical or antipodal.
 
-  Vector3_d ab = RobustCrossProd(a, b);
-  Vector3_d bc = RobustCrossProd(b, c);
-  Vector3_d ac = RobustCrossProd(a, c);
+  S2Point ab = RobustCrossProd(a, b);
+  S2Point bc = RobustCrossProd(b, c);
+  S2Point ac = RobustCrossProd(a, c);
   return max(0.0, ab.Angle(ac) - ab.Angle(bc) + bc.Angle(ac));
 }
 
 double S2::SignedArea(S2Point const& a, S2Point const& b, S2Point const& c) {
-  return RobustCCW(a, b, c) * Area(a, b, c);
+  return Area(a, b, c) * RobustCCW(a, b, c);
 }
 
 S2Point S2::PlanarCentroid(S2Point const& a, S2Point const& b,
@@ -599,7 +625,7 @@ S2Point S2::TrueCentroid(S2Point const& a, S2Point const& b,
   // other two rows; this reduces the cancellation error when A, B, and C are
   // very close together.  Then we solve it using Cramer's rule.
   //
-  // TODO(ericv): This code still isn't as numerically stable as it could be.
+  // TODO(user): This code still isn't as numerically stable as it could be.
   // The biggest potential improvement is to compute B-A and C-A more
   // accurately so that (B-A)x(C-A) is always inside triangle ABC.
   S2Point x(a.x(), b.x() - a.x(), c.x() - a.x());
@@ -622,37 +648,6 @@ bool S2::OrderedCCW(S2Point const& a, S2Point const& b, S2Point const& c,
   if (RobustCCW(c, o, b) >= 0) ++sum;
   if (RobustCCW(a, o, c) > 0) ++sum;
   return sum >= 2;
-}
-
-int S2::XYZtoFaceSiTi(S2Point const& p, int* face, unsigned int* si,
-                      unsigned int* ti) {
-  double u, v;
-  *face = XYZtoFaceUV(p, &u, &v);
-  *si = STtoSiTi(UVtoST(u));
-  *ti = STtoSiTi(UVtoST(v));
-  // If the levels corresponding to si,ti are not equal, then p is not a cell
-  // center.  The si,ti values 0 and kMaxSiTi need to be handled specially
-  // because they do not correspond to cell centers at any valid level; they
-  // are mapped to level -1 by the code below.
-  int level = kMaxCellLevel - Bits::FindLSBSetNonZero(*si | kMaxSiTi);
-  if (level < 0 ||
-      level != kMaxCellLevel - Bits::FindLSBSetNonZero(*ti | kMaxSiTi)) {
-    return -1;
-  }
-  DCHECK_LE(level, kMaxCellLevel);
-  // In infinite precision, this test could be changed to ST == SiTi. However,
-  // due to rounding errors, UVtoST(XYZtoFaceUV(FaceUVtoXYZ(STtoUV(...)))) is
-  // not idempotent. On the other hand, center_raw is computed exactly the same
-  // way p was originally computed (if it is indeed the center of an S2Cell):
-  // the comparison can be exact.
-  S2Point center = FaceSiTitoXYZ(*face, *si, *ti).Normalize();
-  return p == center ? level : -1;
-}
-
-S2Point S2::FaceSiTitoXYZ(int face, unsigned int si, unsigned int ti) {
-  double u = STtoUV(S2::SiTitoST(si));
-  double v = STtoUV(S2::SiTitoST(ti));
-  return FaceUVtoXYZ(face, u, v);
 }
 
 // kIJtoPos[orientation][ij] -> pos
@@ -704,8 +699,8 @@ S2::LengthMetric const S2::kAvgAngleSpan(M_PI / 2);                    // 1.571
 
 S2::LengthMetric const S2::kMinWidth(
     S2_PROJECTION == S2_LINEAR_PROJECTION ? sqrt(2. / 3) :             // 0.816
-    S2_PROJECTION == S2_TAN_PROJECTION ? M_PI / (2 * sqrt(2)) :        // 1.111
-    S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 2 * sqrt(2) / 3 :       // 0.943
+    S2_PROJECTION == S2_TAN_PROJECTION ? M_PI / (2 * sqrt(2.)) :       // 1.111
+    S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 2 * sqrt(2.) / 3 :      // 0.943
     0);
 
 S2::LengthMetric const S2::kMaxWidth(S2::kMaxAngleSpan.deriv());
@@ -718,9 +713,9 @@ S2::LengthMetric const S2::kAvgWidth(
     0);
 
 S2::LengthMetric const S2::kMinEdge(
-    S2_PROJECTION == S2_LINEAR_PROJECTION ? 2 * sqrt(2) / 3 :          // 0.943
-    S2_PROJECTION == S2_TAN_PROJECTION ? M_PI / (2 * sqrt(2)) :        // 1.111
-    S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 2 * sqrt(2) / 3 :       // 0.943
+    S2_PROJECTION == S2_LINEAR_PROJECTION ? 2 * sqrt(2.) / 3 :         // 0.943
+    S2_PROJECTION == S2_TAN_PROJECTION ? M_PI / (2 * sqrt(2.)) :       // 1.111
+    S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 2 * sqrt(2.) / 3 :      // 0.943
     0);
 
 S2::LengthMetric const S2::kMaxEdge(S2::kMaxAngleSpan.deriv());
@@ -733,13 +728,13 @@ S2::LengthMetric const S2::kAvgEdge(
     0);
 
 S2::LengthMetric const S2::kMinDiag(
-    S2_PROJECTION == S2_LINEAR_PROJECTION ? 2 * sqrt(2) / 3 :          // 0.943
-    S2_PROJECTION == S2_TAN_PROJECTION ? M_PI * sqrt(2) / 3 :          // 1.481
-    S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 8 * sqrt(2) / 9 :       // 1.257
+    S2_PROJECTION == S2_LINEAR_PROJECTION ? 2 * sqrt(2.) / 3 :         // 0.943
+    S2_PROJECTION == S2_TAN_PROJECTION ? M_PI * sqrt(2.) / 3 :         // 1.481
+    S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 8 * sqrt(2.) / 9 :      // 1.257
     0);
 
 S2::LengthMetric const S2::kMaxDiag(
-    S2_PROJECTION == S2_LINEAR_PROJECTION ? 2 * sqrt(2) :              // 2.828
+    S2_PROJECTION == S2_LINEAR_PROJECTION ? 2 * sqrt(2.) :             // 2.828
     S2_PROJECTION == S2_TAN_PROJECTION ? M_PI * sqrt(2. / 3) :         // 2.565
     S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 2.438654594434021032 :  // 2.439
     0);
@@ -751,9 +746,9 @@ S2::LengthMetric const S2::kAvgDiag(
     0);
 
 S2::AreaMetric const S2::kMinArea(
-    S2_PROJECTION == S2_LINEAR_PROJECTION ? 4 / (3 * sqrt(3)) :        // 0.770
-    S2_PROJECTION == S2_TAN_PROJECTION ? (M_PI*M_PI) / (4*sqrt(2)) :   // 1.745
-    S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 8 * sqrt(2) / 9 :       // 1.257
+    S2_PROJECTION == S2_LINEAR_PROJECTION ? 4 / (3 * sqrt(3.)) :       // 0.770
+    S2_PROJECTION == S2_TAN_PROJECTION ? (M_PI*M_PI) / (4*sqrt(2.)) :  // 1.745
+    S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 8 * sqrt(2.) / 9 :      // 1.257
     0);
 
 S2::AreaMetric const S2::kMaxArea(
@@ -766,10 +761,10 @@ S2::AreaMetric const S2::kAvgArea(4 * M_PI / 6);                       // 2.094
 // This is true for all projections.
 
 double const S2::kMaxEdgeAspect = (
-    S2_PROJECTION == S2_LINEAR_PROJECTION ? sqrt(2) :                  // 1.414
-    S2_PROJECTION == S2_TAN_PROJECTION ?  sqrt(2) :                    // 1.414
+    S2_PROJECTION == S2_LINEAR_PROJECTION ? sqrt(2.) :                 // 1.414
+    S2_PROJECTION == S2_TAN_PROJECTION ?  sqrt(2.) :                   // 1.414
     S2_PROJECTION == S2_QUADRATIC_PROJECTION ? 1.442615274452682920 :  // 1.443
     0);
 
-double const S2::kMaxDiagAspect = sqrt(3);                             // 1.732
+double const S2::kMaxDiagAspect = sqrt(3.);                            // 1.732
 // This is true for all projections.

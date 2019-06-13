@@ -1,33 +1,27 @@
 // Copyright 2006 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2POLYGONBUILDER_H__
 #define UTIL_GEOMETRY_S2POLYGONBUILDER_H__
 
-#include <ext/hash_map>
-using __gnu_cxx::hash;
-using __gnu_cxx::hash_map;
-#include <set>
-#include <utility>
-#include <vector>
+#include "base/definer.h"
+#include "hash.h"
 
-#include "base/macros.h"
-#include "base/scoped_ptr.h"
-#include "s1angle.h"
+#include <set>
+using std::set;
+using std::multiset;
+
+#include <utility>
+using std::pair;
+using std::make_pair;
+
+#include <vector>
+using std::vector;
+
+#include <boost/scoped_ptr.hpp>
+using boost::scoped_ptr;
+#include "base/basictypes.h"
 #include "s2.h"
+#include "s1angle.h"
 #include "util/math/matrix3x3.h"
 
 class S2Loop;
@@ -56,23 +50,12 @@ class S2Polygon;
 //
 // 4. As a tool for implementing other polygon operations by generating a
 //    collection of directed edges and then assembling them into loops.
-//
-// 5. Making a polygon robust to serialization operations
-//    that change precision.  See set_robustness_radius() below.
-//
-// Caveat: Because S2PolygonBuilder only works with polygon boundaries, it
-// cannot distinguish between the empty and full polygon.  If your application
-// can generate both the empty and full polygons, you must implement logic
-// outside of this class (see AssemblePolygon below).
-
-// S2PolygonBuilderOptions is intended to be copied by value as desired.
 class S2PolygonBuilderOptions {
  public:
   S2PolygonBuilderOptions() :
-      undirected_edges_(false), xor_edges_(true), validate_(false),
-      s2debug_override_(ALLOW_S2DEBUG), snap_to_cell_centers_(false),
-      vertex_merge_radius_(S1Angle::Radians(0)), edge_splice_fraction_(0.866) {
-  }
+    undirected_edges_(false), xor_edges_(true), validate_(false),
+    vertex_merge_radius_(S1Angle::Radians(0)),
+    edge_splice_fraction_(0.866) {}
 
   // These are the options that should be used for assembling well-behaved
   // input data into polygons.  All edges should be directed such that
@@ -132,36 +115,8 @@ class S2PolygonBuilderOptions {
   // is rejected and returned as a set of "unused edges".  Any remaining valid
   // loops are kept.  If the entire polygon is invalid (e.g. two loops
   // intersect), then all loops are rejected and returned as unused edges.
-  //
-  // When this option is turned on, the --s2debug flag is automatically
-  // disabled (see set_s2debug_override) to avoid fatal assertions in debug
-  // mode when invalid geometry is encountered.
   bool validate() const { return validate_; }
   void set_validate(bool validate);
-
-  // Default value: ALLOW_S2DEBUG
-  //
-  // This method can be used to turn off the automatic validity checks
-  // controlled by the --s2debug flag (which is on by default in debug mode).
-  // The only reason to turn off these checks is if you intend to call
-  // IsValid() or FindValidationError() explicitly, e.g. because you would
-  // like to report a specific error.
-  //
-  // Note that AssemblePolygon() always sets polygon->s2debug_override() to
-  // the value specified here (any previous value is ignored).
-  S2debugOverride s2debug_override() const { return s2debug_override_; }
-  void set_s2debug_override(S2debugOverride override);
-
-  // Default value: false.
-  //
-  // If true, the built polygon will have its vertices snapped to the centers
-  // of s2 cells at the smallest level number such that no vertex will move
-  // by more than the robustness radius.  If the robustness radius is smaller
-  // than half the leaf cell diameter, no snapping will occur.  This is useful
-  // because snapped polygons can be Encode()d using less space.
-  // See S2EncodePointsCompressed.
-  bool snap_to_cell_centers() const { return snap_to_cell_centers_; }
-  void set_snap_to_cell_centers(bool snap_to_cell_centers);
 
   // Default value: 0.
   //
@@ -173,7 +128,7 @@ class S2PolygonBuilderOptions {
   // This method is useful for assembling polygons out of input data where
   // vertices and/or edges may not be perfectly aligned.
   S1Angle vertex_merge_radius() const { return vertex_merge_radius_; }
-  void set_vertex_merge_radius(S1Angle vertex_merge_radius);
+  void set_vertex_merge_radius(S1Angle const& vertex_merge_radius);
 
   // Default value: 0.866 (approximately sqrt(3)/2).
   //
@@ -202,36 +157,10 @@ class S2PolygonBuilderOptions {
   double edge_splice_fraction() const { return edge_splice_fraction_; }
   void set_edge_splice_fraction(double edge_splice_fraction);
 
-  // The lossless way to serialize a polygon takes 24 bytes per vertex
-  // (3 doubles).  If you want a representation with fewer bits, you
-  // need to snap your vertices to a grid.  If a vertex is very close
-  // to an edge, the snapping operation can lead to self-intersection.
-  // To guarantee that a polygon remains valid when its vertices are
-  // moved by an angle of up to epsilon, you need:
-  //       vertex_merge_radius * edge_splice_fraction >= 2 * epsilon,
-  // as the edge and the vertex can each move by epsilon upon snapping.
-  // The edge_splice_fraction cannot be zero to have a
-  // robustness guarantee.
-  //
-  // If your grid has maximum diameter d, call set_robustness_radius(d/2).
-  //
-  // This getter/setter computes vertex_merge_radius based on the
-  // robustness requirement.
-  S1Angle GetRobustnessRadius() const;
-  void SetRobustnessRadius(S1Angle robustness_radius);
-
-  // If snap_to_cell_centers is true, returns the minimum level at which
-  // snapping a point to the center of a cell at that level will move the
-  // point by no more than the robustness radius.  Returns -1 if there is
-  // no such level, or if snap_to_cell_centers is false.
-  int GetSnapLevel() const;
-
  private:
   bool undirected_edges_;
   bool xor_edges_;
   bool validate_;
-  S2debugOverride s2debug_override_;
-  bool snap_to_cell_centers_;
   S1Angle vertex_merge_radius_;
   double edge_splice_fraction_;
 };
@@ -261,15 +190,13 @@ class S2PolygonBuilder {
   void AddLoop(S2Loop const* loop);
 
   // Add all loops in the given polygon.  Shells and holes are added with
-  // opposite orientations as described for AddLoop().  Note that this method
-  // does not distinguish between the empty and full polygons, i.e. adding a
-  // full polygon has the same effect as adding an empty one.
+  // opposite orientations as described for AddLoop().
   //
   // This method does not take ownership of the polygon.
   void AddPolygon(S2Polygon const* polygon);
 
   // This type is used to return any edges that could not be assembled.
-  typedef std::vector<std::pair<S2Point, S2Point> > EdgeList;
+  typedef vector<pair<S2Point, S2Point> > EdgeList;
 
   // Assembles the given edges into as many non-crossing loops as possible.
   // When there is a choice about how to assemble the loops, then CCW loops
@@ -283,29 +210,22 @@ class S2PolygonBuilder {
   // not be able to assemble all loops due to its preference for CCW loops.
   //
   // This method resets the S2PolygonBuilder state so that it can be reused.
-  bool AssembleLoops(std::vector<S2Loop*>* loops, EdgeList* unused_edges);
+  bool AssembleLoops(vector<S2Loop*>* loops, EdgeList* unused_edges);
 
-  // Like AssembleLoops, but then assembles the loops into a polygon.  If the
-  // edges were directed, then it is expected that holes and shells will have
-  // opposite orientations, and the polygon interior is to the left of all
-  // edges.  If the edges were undirected, then all loops are first normalized
-  // so that they enclose at most half of the sphere, and the polygon interior
-  // consists of points enclosed by an odd number of loops.
+  // Like AssembleLoops, but normalizes all the loops so that they enclose
+  // less than half the sphere, and then assembles the loops into a polygon.
   //
-  // Returns true if all of the edges were assembled into loops.  Note that a
-  // partial polygon is returned even when the return value is false.
+  // For this method to succeed, there should be no duplicate edges in the
+  // input.  If this is not known to be true, then the "xor_edges" option
+  // should be set (which is true by default).
   //
-  // If the validate() option is set and the assembled polygon is not valid,
-  // "polygon" is reset to empty and false is returned.  Note that for the
-  // polygon to be valid, there must not be any duplicate edges in the input.
-  // Duplicate edges can be eliminated using the xor_edges() option.
-  //
-  // Note that because the polygon is constructed from its boundary, this
-  // method cannot distinguish between the empty and full polygons.  An empty
-  // boundary always yields an empty polygon.  If the result should sometimes
-  // be the full polygon, such logic must be implemented outside of this class
-  // (and will need to consider factors other than the polygon's boundary).
-  // For example, it is often possible to estimate the polygon area.
+  // Note that S2Polygons cannot represent arbitrary regions on the sphere,
+  // because of the limitation that no loop encloses more than half of the
+  // sphere.  For example, an S2Polygon cannot represent a 100km wide band
+  // around the equator.  In such cases, this method will return the
+  // *complement* of the expected region.  So for example if all the world's
+  // coastlines were assembled, the output S2Polygon would represent the land
+  // area (irrespective of the input edge or loop orientations).
   bool AssemblePolygon(S2Polygon* polygon, EdgeList* unused_edges);
 
   // This function is only for debugging.  If it is called, then points will
@@ -342,8 +262,7 @@ class S2PolygonBuilder {
   // current position to a new position, and also returns a spatial index
   // containing all of the vertices that do not need to be moved.
   class PointIndex;
-
-  typedef hash_map<S2Point, S2Point, HashS2Point> MergeMap;
+  typedef hash_map<S2Point, S2Point> MergeMap;
   void BuildMergeMap(PointIndex* index, MergeMap* merge_map);
 
   // Moves a set of vertices from old to new positions.
@@ -351,7 +270,7 @@ class S2PolygonBuilder {
 
   // Modifies each edge by splicing in any vertices whose distance to the edge
   // is at most (edge_splice_fraction() * vertex_merge_radius()).
-  void SpliceEdges(PointIndex const& index);
+  void SpliceEdges(PointIndex* index);
 
   S2PolygonBuilderOptions options_;
 
@@ -362,15 +281,13 @@ class S2PolygonBuilder {
   // vertices is a multiset so that the same edge can be present more than
   // once.  We could have also used a multiset<pair<S2Point, S2Point> >,
   // but this representation is a bit more convenient.
-  typedef std::multiset<S2Point> VertexSet;
-  typedef hash_map<S2Point, VertexSet, HashS2Point> EdgeSet;
+  typedef multiset<S2Point> VertexSet;
+  typedef hash_map<S2Point, VertexSet> EdgeSet;
   scoped_ptr<EdgeSet> edges_;
 
   // Unique collection of the starting (first) vertex of all edges,
   // in the order they are added to edges_.
-  std::vector<S2Point> starting_vertices_;
-
-  DISALLOW_COPY_AND_ASSIGN(S2PolygonBuilder);
+  vector<S2Point> starting_vertices_;
 };
 
 inline S2PolygonBuilderOptions S2PolygonBuilderOptions::DIRECTED_XOR() {

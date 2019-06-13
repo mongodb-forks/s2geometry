@@ -1,34 +1,18 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2regionunion.h"
 
 #include <vector>
+using std::vector;
+
 
 #include "base/scoped_ptr.h"
-#include "gtest/gtest.h"
+#include "testing/base/public/gunit.h"
 #include "s2cap.h"
 #include "s2cell.h"
-#include "s2cellid.h"
-#include "s2latlng.h"
 #include "s2latlngrect.h"
 #include "s2pointregion.h"
 #include "s2regioncoverer.h"
-
-using std::vector;
 
 namespace {
 
@@ -55,7 +39,7 @@ TEST(S2RegionUnionTest, Basic) {
                          S2LatLng::FromDegrees(35, 40)),
             two_points->GetRectBound());
 
-  S2Cell face0 = S2Cell::FromFace(0);
+  S2Cell face0 = S2Cell::FromFacePosLevel(0, 0, 0);
   EXPECT_TRUE(two_points->MayIntersect(face0));
   EXPECT_FALSE(two_points->Contains(face0));
 

@@ -1,17 +1,4 @@
-// Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+// Copyright 2005 Google Inc.
 // All Rights Reserved.
 //
 //
@@ -26,15 +13,10 @@
 #ifndef UTIL_MATH_MATHLIMITS_H__
 #define UTIL_MATH_MATHLIMITS_H__
 
-// <math.h> lacks a lot of prototypes. However, this file needs <math.h> to
-// access old-fashioned isinf et al. Even worse more: this file must not
-// include <cmath> because that breaks the definition of isinf with gcc 4.9.
-//
-// TODO(user): after C++11 everywhere, use <cmath> and std::isinf in this file.
-#include <math.h>
 #include <string.h>
-
+#include <math.h>
 #include <cfloat>
+#include "base/basictypes.h"
 
 // ========================================================================= //
 
@@ -124,22 +106,22 @@ template<typename T> struct MathLimits {
 // Compile-time selected log10-related constants for integer types.
 #define SIGNED_MAX_10_EXP(Type) \
   (sizeof(Type) == 1 ? 2 : ( \
-    sizeof(Type) == 2 ? 4 : ( \
-      sizeof(Type) == 4 ? 9 : ( \
-        sizeof(Type) == 8 ? 18 : -1))))
+   sizeof(Type) == 2 ? 4 : ( \
+   sizeof(Type) == 4 ? 9 : ( \
+   sizeof(Type) == 8 ? 18 : -1))))
 
 #define UNSIGNED_MAX_10_EXP(Type) \
   (sizeof(Type) == 1 ? 2 : ( \
-    sizeof(Type) == 2 ? 4 : ( \
-      sizeof(Type) == 4 ? 9 : ( \
-        sizeof(Type) == 8 ? 19 : -1))))
+   sizeof(Type) == 2 ? 4 : ( \
+   sizeof(Type) == 4 ? 9 : ( \
+   sizeof(Type) == 8 ? 19 : -1))))
 
 #define DECL_INT_LIMIT_FUNCS \
-  static bool IsFinite(const Type /*x*/) { return true; } \
-  static bool IsNaN(const Type /*x*/) { return false; } \
-  static bool IsInf(const Type /*x*/) { return false; } \
-  static bool IsPosInf(const Type /*x*/) { return false; } \
-  static bool IsNegInf(const Type /*x*/) { return false; }
+  static bool IsFinite(const Type x) { return true; } \
+  static bool IsNaN(const Type x) { return false; } \
+  static bool IsInf(const Type x) { return false; } \
+  static bool IsPosInf(const Type x) { return false; } \
+  static bool IsNegInf(const Type x) { return false; }
 
 #define DECL_SIGNED_INT_LIMITS(IntType, UnsignedIntType) \
 template<> \

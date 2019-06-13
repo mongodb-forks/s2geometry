@@ -1,36 +1,21 @@
 // Copyright 2009 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "util/math/exactfloat/exactfloat.h"
+#include <cstring>
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <math.h>
 #include <algorithm>
-#include <cmath>
+using std::min;
+using std::max;
+using std::swap;
+using std::reverse;
+
 #include <limits>
+using std::numeric_limits;
 
 #include "base/integral_types.h"
-#include <glog/logging.h>
-#include "base/macros.h"
-#include <openssl/bn.h>
-#include <openssl/crypto.h>  // for OPENSSL_free
-
-using std::max;
-using std::min;
+#include "base/logging.h"
+#include "openssl/crypto.h"
 
 // Define storage for constants.
 const int ExactFloat::kMinExp;
@@ -101,7 +86,7 @@ static int BN_ext_count_low_zero_bits(const BIGNUM* bn) {
 
 ExactFloat::ExactFloat(double v) {
   BN_init(&bn_);
-  sign_ = std::signbit(v) ? -1 : 1;
+  sign_ = signbit(v) ? -1 : 1;
   if (isnan(v)) {
     set_nan();
   } else if (isinf(v)) {
@@ -343,7 +328,7 @@ string ExactFloat::ToStringWithMaxDigits(int max_digits) const {
     // Use fixed format.  We split this into two cases depending on whether
     // the integer portion is non-zero or not.
     if (exp10 > 0) {
-      if (exp10 >= digits.size()) {
+      if ((size_t)exp10 >= digits.size()) {
         str += digits;
         for (int i = exp10 - digits.size(); i > 0; --i) {
           str.push_back('0');
@@ -489,7 +474,6 @@ ExactFloat ExactFloat::SignedSum(int a_sign, const ExactFloat* a,
   }
   // Swap the numbers if necessary so that "a" has the larger bn_exp_.
   if (a->bn_exp_ < b->bn_exp_) {
-    using std::swap;
     swap(a_sign, b_sign);
     swap(a, b);
   }
@@ -625,10 +609,6 @@ bool operator<(const ExactFloat& a, const ExactFloat& b) {
 }
 
 ExactFloat fabs(const ExactFloat& a) {
-  return abs(a);
-}
-
-ExactFloat abs(const ExactFloat& a) {
   return a.CopyWithSign(+1);
 }
 
@@ -681,7 +661,6 @@ ExactFloat rint(const ExactFloat& a) {
 
 template <class T>
 T ExactFloat::ToInteger(RoundingMode mode) const {
-  using std::numeric_limits;
   COMPILE_ASSERT(sizeof(T) <= sizeof(uint64), max_64_bits_supported);
   COMPILE_ASSERT(numeric_limits<T>::is_signed, only_signed_types_supported);
   const int64 kMinValue = numeric_limits<T>::min();
@@ -746,12 +725,6 @@ ExactFloat ldexp(const ExactFloat& a, int exp) {
   r.bn_exp_ += exp;
   r.Canonicalize();
   return r;
-}
-
-ExactFloat scalbln(const ExactFloat& a, long exp) {
-  // Clamp the exponent to the range of "int" in order to avoid truncation.
-  exp = max(static_cast<long>(INT_MIN), min(static_cast<long>(INT_MAX), exp));
-  return ldexp(a, exp);
 }
 
 int ilogb(const ExactFloat& a) {

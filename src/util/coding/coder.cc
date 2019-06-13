@@ -1,30 +1,15 @@
-// Copyright 2000 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+// Copyright 2000 - 2003 Google Inc.
 //
 //
 
+#include "base/logging.h"
 #include "util/coding/coder.h"
 
-#include <assert.h>
-#include <algorithm>
-
-#include "base/integral_types.h"
-#include <glog/logging.h>
-
-// An initialization value used when we are allowed to
+// An initialization value used when we are allowed to 
 unsigned char Encoder::kEmptyBuffer = 0;
+const int Encoder::kVarintMax32 = Varint::kMax32;
+const int Encoder::kVarintMax64 = Varint::kMax64;
 
 Encoder::Encoder()
   : orig_(NULL),
@@ -32,7 +17,7 @@ Encoder::Encoder()
     limit_(NULL),
     underlying_buffer_(&kEmptyBuffer) {
 }
-
+  
 Encoder::~Encoder() {
   if (underlying_buffer_ != &kEmptyBuffer) {
     delete[] underlying_buffer_;
@@ -47,14 +32,14 @@ int Encoder::varint64_length(uint64 v) {
   return Varint::Length64(v);
 }
 
-void Encoder::EnsureSlowPath(size_t N) {
+void Encoder::EnsureSlowPath(int N) {
   CHECK(ensure_allowed());
   assert(avail() < N);
   assert(length() == 0 || orig_ == underlying_buffer_);
 
   // Double buffer size, but make sure we always have at least N extra bytes
-  const size_t current_len = length();
-  const size_t new_capacity = std::max(current_len + N, 2 * current_len);
+  int current_len = length();
+  int new_capacity = max(current_len + N, 2 * current_len);
 
   unsigned char* new_buffer = new unsigned char[new_capacity];
   memcpy(new_buffer, underlying_buffer_, current_len);
@@ -69,12 +54,12 @@ void Encoder::EnsureSlowPath(size_t N) {
   CHECK(avail() >= N);
 }
 
-void Encoder::RemoveLast(size_t N) {
+void Encoder::RemoveLast(int N) {
   CHECK(length() >= N);
   buf_ -= N;
 }
 
-void Encoder::Resize(size_t N) {
+void Encoder::Resize(int N) {
   CHECK(length() >= N);
   buf_ = orig_ + N;
   assert(length() == N);
@@ -110,7 +95,7 @@ bool Decoder::get_varint64(uint64* v) {
         // Out of range
         return false;
       }
-
+      
       // Get 7 bits from next byte
       byte = *(buf_++);
       result |= static_cast<uint64>(byte & 127) << shift;

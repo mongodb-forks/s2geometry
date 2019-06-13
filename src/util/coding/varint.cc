@@ -1,29 +1,12 @@
-// Copyright 2001 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+// Copyright 2001 and onwards Google Inc.
+
+#include <string>
+using std::string;
 
 #include "util/coding/varint.h"
 
-#include <string>
-
-#include "base/integral_types.h"
-
-#ifndef _MSC_VER
-const int Varint::kMax32;
-const int Varint::kMax64;
-const int Varint::kSlopBytes;
-#endif
+const int Varint::kMax32 = 5;
+const int Varint::kMax64 = 10;
 
 char* Varint::Encode32(char* sptr, uint32 v) {
   return Encode32Inline(sptr, v);
@@ -57,7 +40,6 @@ const char* Varint::Parse32Fallback(const char* ptr, uint32* OUTPUT) {
 
 const char* Varint::Parse64Fallback(const char* p, uint64* OUTPUT) {
   const unsigned char* ptr = reinterpret_cast<const unsigned char*>(p);
-  assert(*ptr >= 128);
   // Fast path: need to accumulate data in upto three result fragments
   //    res1    bits 0..27
   //    res2    bits 28..55
@@ -219,7 +201,7 @@ void Varint::EncodeTwo32Values(string* s, uint32 a, uint32 b) {
 const char* Varint::DecodeTwo32ValuesSlow(const char* ptr,
                                           uint32* a, uint32* b) {
   uint64 v = 0;
-  const char* result = Varint::Parse64Fallback(ptr, &v);
+  const char* result = Varint::Parse64(ptr, &v);
   *a = 0;
   *b = 0;
   int shift = 0;
@@ -252,21 +234,31 @@ inline int FastLength32(uint32 v) {
   }
 }
 
-const char Varint::kLengthBytesRequired[65] =
+const char Varint::length32_bytes_required[33] =
 {
-  1,            // Entry when the value is 0
-  1, 1, 1, 1, 1, 1, 1,
-  2, 2, 2, 2, 2, 2, 2,
-  3, 3, 3, 3, 3, 3, 3,
-  4, 4, 4, 4, 4, 4, 4,
-  5, 5, 5, 5, 5, 5, 5,
-  6, 6, 6, 6, 6, 6, 6,
-  7, 7, 7, 7, 7, 7, 7,
-  8, 8, 8, 8, 8, 8, 8,
-  9, 9, 9, 9, 9, 9, 9,
-  10,
+  1,            // Entry for "-1", which happens when the value is 0
+  1,1,1,1,1,1,1,
+  2,2,2,2,2,2,2,
+  3,3,3,3,3,3,3,
+  4,4,4,4,4,4,4,
+  5,5,5,5
 };
 
 int Varint::Length32NonInline(uint32 v) {
   return FastLength32(v);
+}
+
+int Varint::Length64(uint64 v) {
+  uint32 tmp;
+  int nb;       // Number of bytes we've determined from our tests
+  if (v < (1u << 28)) {
+    tmp = v;
+    nb = 0;
+  } else if (v < (1ull << 35)) {
+    return 5;
+  } else {
+    tmp = v >> 35;
+    nb = 5;
+  }
+  return nb + Varint::Length32(tmp);
 }

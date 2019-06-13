@@ -1,33 +1,16 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2LATLNG_H__
 #define UTIL_GEOMETRY_S2LATLNG_H__
 
-#include <math.h>
-#include <iosfwd>
-#include <ostream>
 #include <string>
+using std::string;
 
-#include "base/integral_types.h"
-#include "base/type_traits.h"
-#include "r2.h"
+#include <ostream>
+#include "base/basictypes.h"
 #include "s1angle.h"
 #include "s2.h"
-#include "util/math/vector2.h"
+#include "util/math/vector2-inl.h"
 
 // This class represents a point on the unit sphere as a pair
 // of latitude-longitude coordinates.  Like the rest of the "geometry"
@@ -42,7 +25,7 @@ class S2LatLng {
   // Constructor.  The latitude and longitude are allowed to be outside
   // the is_valid() range.  However, note that most methods that accept
   // S2LatLngs expect them to be normalized (see Normalized() below).
-  inline S2LatLng(S1Angle lat, S1Angle lng);
+  inline S2LatLng(S1Angle const& lat, S1Angle const& lng);
 
   // The default constructor sets the latitude and longitude to zero.  This is
   // mainly useful when declaring arrays, STL containers, etc.
@@ -75,7 +58,7 @@ class S2LatLng {
   // Accessor methods.
   S1Angle lat() const { return S1Angle::Radians(coords_[0]); }
   S1Angle lng() const { return S1Angle::Radians(coords_[1]); }
-  R2Point const& coords() const { return coords_; }
+  Vector2_d const& coords() const { return coords_; }
 
   // Return true if the latitude is between -90 and 90 degrees inclusive
   // and the longitude is between -180 and 180 degrees inclusive.
@@ -92,7 +75,7 @@ class S2LatLng {
   // Return the distance (measured along the surface of the sphere) to the
   // given S2LatLng.  This is mathematically equivalent to:
   //
-  //   S1Angle(ToPoint(), o.ToPoint())
+  //   S1Angle::Radians(ToPoint().Angle(o.ToPoint()))
   //
   // but this implementation is slightly more efficient.  Both S2LatLngs
   // must be normalized.
@@ -120,19 +103,21 @@ class S2LatLng {
   // e.g. "94.518000,150.300000"
   string ToStringInDegrees() const;
   void ToStringInDegrees(string* s) const;
+  string toString() const { return ToStringInDegrees(); }
 
  private:
   // Internal constructor.
-  inline S2LatLng(R2Point const& coords) : coords_(coords) {}
+  inline S2LatLng(Vector2_d const& coords) : coords_(coords) {}
 
   // This is internal to avoid ambiguity about which units are expected.
   inline S2LatLng(double lat_radians, double lng_radians)
     : coords_(lat_radians, lng_radians) {}
 
-  R2Point coords_;
+  Vector2_d coords_;
 };
+DECLARE_POD(S2LatLng);
 
-inline S2LatLng::S2LatLng(S1Angle lat, S1Angle lng)
+inline S2LatLng::S2LatLng(S1Angle const& lat, S1Angle const& lng)
     : coords_(lat.radians(), lng.radians()) {}
 
 inline S2LatLng::S2LatLng() : coords_(0, 0) {}
@@ -201,6 +186,6 @@ inline S2LatLng operator*(S2LatLng const& a, double m) {
   return S2LatLng(m * a.coords_);
 }
 
-std::ostream& operator<<(std::ostream& os, S2LatLng const& ll);
+ostream& operator<<(ostream& os, S2LatLng const& ll);
 
 #endif  // UTIL_GEOMETRY_S2LATLNG_H__

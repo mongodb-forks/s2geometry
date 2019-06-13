@@ -1,478 +1,373 @@
-// Copyright 2008 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
-// Maintainer: Greg Miller <jgm@google.com>
+// Copyright 2008 and onwards Google Inc.  All rights reserved.
 
-#include "strings/split.h"
-
-#include <assert.h>
-#include <stdlib.h>
-#include <string.h>
-#include <iterator>
 #include <limits>
+using std::numeric_limits;
+
 
 #include "base/integral_types.h"
-#include <glog/logging.h>
+#include "base/logging.h"
 #include "base/macros.h"
 #include "base/strtoint.h"
-#include "strings/ascii_ctype.h"
-#include "strings/util.h"
-#include "util/hash/hash.h"
+#include "split.h"
+#include "strutil.h"
+#include "util/hash/hash_jenkins_lookup2.h"
 
-using std::vector;
+static const uint32 MIX32 = 0x12b9b0a1UL;           // pi; an arbitrary number
+static const uint64 MIX64 = GG_ULONGLONG(0x2b992ddfa23249d6);  // more of pi
 
-// Implementations for some of the Split2 API. Much of the Split2 API is
-// templated so it exists in header files, either strings/split.h or
-// strings/split_internal.h.
-namespace strings {
-namespace delimiter {
+// ----------------------------------------------------------------------
+// Hash32StringWithSeed()
+// Hash64StringWithSeed()
+// Hash32NumWithSeed()
+// Hash64NumWithSeed()
+//   These are Bob Jenkins' hash functions, one for 32 bit numbers
+//   and one for 64 bit numbers.  Each takes a string as input and
+//   a start seed.  Hashing the same string with two different seeds
+//   should give two independent hash values.
+//      The *Num*() functions just do a single mix, in order to
+//   convert the given number into something *random*.
+//
+// Note that these methods may return any value for the given size, while
+// the corresponding HashToXX() methods avoids certain reserved values.
+// ----------------------------------------------------------------------
+
+// These slow down a lot if inlined, so do not inline them  --Sanjay
+//extern uint32 Hash32StringWithSeed(const char *s, uint32 len, uint32 c);
+// Once again, not included, but copied from:
+// http://szl.googlecode.com/svn-history/r40/trunk/src/utilities/hashutils.cc
+// This is an Apache license...make sure this is ok
+const uint32 kPrimes32[16] ={
+  65537, 65539, 65543, 65551, 65557, 65563, 65579, 65581,
+  65587, 65599, 65609, 65617, 65629, 65633, 65647, 65651,
+};
+uint32 Hash32StringWithSeed(const char *s, uint32 len, uint32 seed) {
+  uint32 n = seed;
+  size_t prime1 = 0, prime2 = 8;  // Indices into kPrimes32
+  union {
+    uint16 n;
+    char bytes[sizeof(uint16)];
+  } chunk;
+  for (const char *i = s, *const end = s + len; i != end; ) {
+    chunk.bytes[0] = *i++;
+    chunk.bytes[1] = i == end ? 0 : *i++;
+    n = n * kPrimes32[prime1++] ^ chunk.n * kPrimes32[prime2++];
+    prime1 &= 0x0F;
+    prime2 &= 0x0F;
+  }
+  return n;
+}
+extern uint64 Hash64StringWithSeed(const char *s, uint32 len, uint64 c);
+extern uint32 Hash32StringWithSeedReferenceImplementation(const char *s,
+                                                          uint32 len, uint32 c);
+// ----------------------------------------------------------------------
+// HashTo32()
+// HashTo16()
+// HashTo8()
+//    These functions take various types of input (through operator
+//    overloading) and return 32, 16, and 8 bit quantities, respectively.
+//    The basic rule of our hashing is: always mix().  Thus, even for
+//    char outputs we cast to a uint32 and mix with two arbitrary numbers.
+//       As indicated in basictypes.h, there are a few illegal hash
+//    values to watch out for.
+//
+// Note that these methods avoid returning certain reserved values, while
+// the corresponding HashXXStringWithSeed() methdos may return any value.
+// ----------------------------------------------------------------------
+
+// This macro defines the HashTo32, To16, and To8 versions all in one go.
+// It takes the argument list and a command that hashes your number.
+// (For 16 and 8, we just mod retval before returning it.)  Example:
+//    HASH_TO((char c), Hash32NumWithSeed(c, MIX32_1))
+// evaluates to
+//    uint32 retval;
+//    retval = Hash32NumWithSeed(c, MIX32_1);
+//    return retval == kIllegalHash32 ? retval-1 : retval;
+//
+
+inline uint32 Hash32NumWithSeed(uint32 num, uint32 c) {
+  uint32 b = 0x9e3779b9UL;            // the golden ratio; an arbitrary value
+  mix(num, b, c);
+  return c;
+}
+
+inline uint64 Hash64NumWithSeed(uint64 num, uint64 c) {
+  uint64 b = GG_ULONGLONG(0xe08c1d668b756f82);   // more of the golden ratio
+  mix(num, b, c);
+  return c;
+}
+
+#define HASH_TO(arglist, command)                              \
+inline uint32 HashTo32 arglist {                               \
+  uint32 retval = command;                                     \
+  return retval == kIllegalHash32 ? retval-1 : retval;         \
+}                                                              \
+inline uint16 HashTo16 arglist {                               \
+  uint16 retval16 = command >> 16;    /* take upper 16 bits */ \
+  return retval16 == kIllegalHash16 ? retval16-1 : retval16;   \
+}                                                              \
+inline unsigned char HashTo8 arglist {                         \
+  unsigned char retval8 = command >> 24;       /* take upper 8 bits */ \
+  return retval8 == kIllegalHash8 ? retval8-1 : retval8;       \
+}
+
+// This defines:
+// HashToXX(char *s, int slen);
+// HashToXX(char c);
+// etc
+
+HASH_TO((const char *s, uint32 slen), Hash32StringWithSeed(s, slen, MIX32))
+HASH_TO((const wchar_t *s, uint32 slen),
+        Hash32StringWithSeed(reinterpret_cast<const char*>(s),
+                             sizeof(wchar_t) * slen,
+                             MIX32))
+HASH_TO((char c),  Hash32NumWithSeed(static_cast<uint32>(c), MIX32))
+HASH_TO((schar c),  Hash32NumWithSeed(static_cast<uint32>(c), MIX32))
+HASH_TO((uint16 c), Hash32NumWithSeed(static_cast<uint32>(c), MIX32))
+HASH_TO((int16 c),  Hash32NumWithSeed(static_cast<uint32>(c), MIX32))
+HASH_TO((uint32 c), Hash32NumWithSeed(static_cast<uint32>(c), MIX32))
+HASH_TO((int32 c),  Hash32NumWithSeed(static_cast<uint32>(c), MIX32))
+HASH_TO((uint64 c), static_cast<uint32>(Hash64NumWithSeed(c, MIX64) >> 32))
+HASH_TO((int64 c),  static_cast<uint32>(Hash64NumWithSeed(c, MIX64) >> 32))
+
+#undef HASH_TO        // clean up the macro space
 
 namespace {
+// NOTE(user): we have to implement our own interator because
+// insert_iterator<set<string> > does not instantiate without
+// errors, perhaps since string != std::string.
+// This is not a fully functional iterator, but is
+// sufficient for SplitStringToIteratorUsing().
+template <typename T>
+struct simple_insert_iterator {
+  T* t_;
+  simple_insert_iterator(T* t) : t_(t) { }
 
-// This GenericFind() template function encapsulates the finding algorithm
-// shared between the Literal and AnyOf delimiters. The FindPolicy template
-// parameter allows each delimiter to customize the actual find function to use
-// and the length of the found delimiter. For example, the Literal delimiter
-// will ultimately use StringPiece::find(), and the AnyOf delimiter will use
-// StringPiece::find_first_of().
-template <typename FindPolicy>
-StringPiece GenericFind(
-    StringPiece text,
-    StringPiece delimiter,
-    size_t pos,
-    FindPolicy find_policy) {
-  if (delimiter.empty() && text.length() > 0) {
-    // Special case for empty string delimiters: always return a zero-length
-    // StringPiece referring to the item at position 1 past pos.
-    return StringPiece(text.begin() + pos + 1, 0);
+  simple_insert_iterator<T>& operator=(const typename T::value_type& value) {
+    t_->insert(value);
+    return *this;
   }
-  size_t found_pos = StringPiece::npos;
-  StringPiece found(text.end(), 0);  // By default, not found
-  found_pos = find_policy.Find(text, delimiter, pos);
-  if (found_pos != StringPiece::npos) {
-    found.set(text.data() + found_pos, find_policy.Length(delimiter));
-  }
-  return found;
-}
 
-// Finds using StringPiece::find(), therefore the length of the found delimiter
-// is delimiter.length().
-struct LiteralPolicy {
-  size_t Find(StringPiece text, StringPiece delimiter, size_t pos) {
-    return text.find(delimiter, pos);
-  }
-  size_t Length(StringPiece delimiter) {
-    return delimiter.length();
-  }
+  simple_insert_iterator<T>& operator*()     { return *this; }
+  simple_insert_iterator<T>& operator++()    { return *this; }
+  simple_insert_iterator<T>& operator++(int) { return *this; }
 };
 
-// Finds using StringPiece::find_first_of(), therefore the length of the found
-// delimiter is 1.
-struct AnyOfPolicy {
-  size_t Find(StringPiece text, StringPiece delimiter, size_t pos) {
-    return text.find_first_of(delimiter, pos);
+// Used to populate a hash_map out of pairs of consecutive strings in
+// SplitStringToIterator{Using|AllowEmpty}().
+template <typename T>
+struct simple_hash_map_iterator {
+  typedef hash_map<T, T> hashmap;
+  hashmap* t;
+  bool even;
+  typename hashmap::iterator curr;
+
+  simple_hash_map_iterator(hashmap* t_init) : t(t_init), even(true) {
+    curr = t->begin();
   }
-  size_t Length(StringPiece delimiter) {
-    return 1;
+
+  simple_hash_map_iterator<T>& operator=(const T& value) {
+    if (even) {
+      curr = t->insert(make_pair(value, T())).first;
+    } else {
+      curr->second = value;
+    }
+    even = !even;
+    return *this;
   }
+
+  simple_hash_map_iterator<T>& operator*()       { return *this; }
+  simple_hash_map_iterator<T>& operator++()      { return *this; }
+  simple_hash_map_iterator<T>& operator++(int i) { return *this; }
 };
-
-}  // namespace
-
-//
-// Literal
-//
-
-Literal::Literal(StringPiece sp) : delimiter_(sp.ToString()) {
-}
-
-StringPiece Literal::Find(StringPiece text, size_t pos) const {
-  return GenericFind(text, delimiter_, pos, LiteralPolicy());
-}
-
-//
-// Single Char
-//
-
-SingleChar::SingleChar(char c) : c_(c) {}
-
-StringPiece SingleChar::Find(StringPiece text, size_t pos) const {
-  size_t found_pos = text.find(c_, pos);
-  if (found_pos == StringPiece::npos) return StringPiece(text.end(), 0);
-  return StringPiece(text, found_pos, 1);
-}
-
-//
-// AnyOf
-//
-
-AnyOf::AnyOf(StringPiece sp) : delimiters_(sp.ToString()) {
-}
-
-StringPiece AnyOf::Find(StringPiece text, size_t pos) const {
-  return GenericFind(text, delimiters_, pos, AnyOfPolicy());
-}
-
-//
-// FixedLength
-//
-FixedLength::FixedLength(int length) : length_(length) {
-  CHECK_GT(length, 0);
-}
-
-StringPiece FixedLength::Find(StringPiece text, size_t pos) const {
-  StringPiece substr(text, pos);
-  // If the string is shorter than the chunk size we say we
-  // "can't find the delimiter" so this will be the last chunk.
-  if (substr.length() <= length_)
-    return StringPiece(text.end(), 0);
-
-  return StringPiece(substr.begin() + length_, 0);
-}
-
-}  // namespace delimiter
-}  // namespace strings
-
-//
-// ==================== LEGACY SPLIT FUNCTIONS ====================
-//
-
-using ::strings::SkipEmpty;
-using ::strings::delimiter::AnyOf;
-using ::strings::delimiter::Limit;
-
-namespace {
-
-// Appends the results of a split to the specified container. This function has
-// the following overloads:
-// - vector<string>           - for better performance
-// - hash_map<string, string> - to change append semantics
-template <typename Container, typename Splitter>
-void AppendToImpl(Container* container, Splitter splitter) {
-  Container c = splitter;  // Calls implicit conversion operator.
-  std::copy(c.begin(), c.end(), std::inserter(*container, container->end()));
-}
-
-// Overload of AppendToImpl() that is optimized for appending to vector<string>.
-// This version eliminates a couple string copies by using a vector<StringPiece>
-// as the intermediate container.
-template <typename Splitter>
-void AppendToImpl(vector<string>* container, Splitter splitter) {
-  vector<StringPiece> vsp = splitter;  // Calls implicit conversion operator.
-  size_t container_size = container->size();
-  container->resize(container_size + vsp.size());
-  for (size_t i = 0; i < vsp.size(); ++i) {
-    vsp[i].CopyToString(&(*container)[container_size++]);
-  }
-}
-
-// Overload of AppendToImpl() for hash_map so that duplicate keys *do* overwrite
-// the previous values, which is not the default behavior with a normal
-// std::inserter for maps.
-//
-//   map<string, string> m;
-//   m.insert(std::make_pair("a", "1"));
-//   m.insert(std::make_pair("a", "2"));  // <-- doesn't actually insert.
-//   ASSERT_EQ(m["a"], "1");  // <-- "a" has value "1" not "2".
-template <typename Splitter>
-void AppendToImpl(hash_map<string, string>* map_container, Splitter splitter) {
-  typedef hash_map<string, string> Map;
-  Map tmp = splitter;  // Calls implicit conversion operator.
-  for (typename Map::const_iterator it = tmp.begin(); it != tmp.end(); ++it) {
-    (*map_container)[it->first] = it->second;
-  }
-}
-
-// Appends the results of a call to strings::Split() to the specified container.
-// This function is used with the new strings::Split() API to implement the
-// append semantics of the legacy Split*() functions.
-//
-// The "Splitter" template parameter is intended to be a
-// ::strings::internal::Splitter<>, which is the return value of a call to
-// strings::Split(). Sample usage:
-//
-//   vector<string> v;
-//   ... add stuff to "v" ...
-//   AppendTo(&v, strings::Split("a,b,c", ","));
-//
-template <typename Container, typename Splitter>
-void AppendTo(Container* container, Splitter splitter) {
-  if (container->empty()) {
-    // "Appending" to an empty container is by far the common case. For this we
-    // assign directly to the output container, which is more efficient than
-    // explicitly appending.
-    *container = splitter;  // Calls implicit conversion operator.
-  } else {
-    AppendToImpl(container, splitter);
-  }
-}
 
 }  // anonymous namespace
 
-// Constants for ClipString()
-static const int kMaxOverCut = 12;
-// The ellipsis to add to strings that are too long
-static const char kCutStr[] = "...";
-static const int kCutStrSize = sizeof(kCutStr) - 1;
-
 // ----------------------------------------------------------------------
-// Return the place to clip the string at, or -1
-// if the string doesn't need to be clipped.
+// SplitStringIntoNPiecesAllowEmpty()
+// SplitStringToIteratorAllowEmpty()
+//    Split a string using a character delimiter. Append the components
+//    to 'result'.  If there are consecutive delimiters, this function
+//    will return corresponding empty strings. The string is split into
+//    at most the specified number of pieces greedily. This means that the
+//    last piece may possibly be split further. To split into as many pieces
+//    as possible, specify 0 as the number of pieces.
+//
+//    If "full" is the empty string, yields an empty string as the only value.
+//
+//    If "pieces" is negative for some reason, it returns the whole string
 // ----------------------------------------------------------------------
-static int ClipStringHelper(const char* str, int max_len, bool use_ellipsis) {
-  if (strlen(str) <= max_len)
-    return -1;
+template <typename StringType, typename ITR>
+static inline
+void SplitStringToIteratorAllowEmpty(const StringType& full,
+                                     const char* delim,
+                                     int pieces,
+                                     ITR& result) {
+  string::size_type begin_index, end_index;
+  begin_index = 0;
 
-  int max_substr_len = max_len;
-
-  if (use_ellipsis && max_len > kCutStrSize) {
-    max_substr_len -= kCutStrSize;
-  }
-
-  const char* cut_by =
-      (max_substr_len < kMaxOverCut ? str : str + max_len - kMaxOverCut);
-  const char* cut_at = str + max_substr_len;
-  while (!ascii_isspace(*cut_at) && cut_at > cut_by)
-    cut_at--;
-
-  if (cut_at == cut_by) {
-    // No space was found
-    return max_substr_len;
-  } else {
-    return cut_at-str;
-  }
-}
-
-// ----------------------------------------------------------------------
-// ClipString
-//    Clip a string to a max length. We try to clip on a word boundary
-//    if this is possible. If the string is clipped, we append an
-//    ellipsis.
-// ----------------------------------------------------------------------
-void ClipString(string* full_str, int max_len) {
-  int cut_at = ClipStringHelper(full_str->c_str(), max_len, true);
-  if (cut_at != -1) {
-    full_str->erase(cut_at);
-    if (max_len > kCutStrSize) {
-      full_str->append(kCutStr);
+  for (int i=0; (i < pieces-1) || (pieces == 0); i++) {
+    end_index = full.find_first_of(delim, begin_index);
+    if (end_index == string::npos) {
+      *result++ = full.substr(begin_index);
+      return;
     }
+    *result++ = full.substr(begin_index, (end_index - begin_index));
+    begin_index = end_index + 1;
   }
+  *result++ = full.substr(begin_index);
 }
+
+#ifdef _WIN32
+#include <iterator>
+//#define back_insert_iterator Platform::Collections::BackInsertIterator
+#endif
 
 void SplitStringIntoNPiecesAllowEmpty(const string& full,
                                       const char* delim,
                                       int pieces,
                                       vector<string>* result) {
-  if (pieces == 0) {
-    // No limit when pieces is 0.
-    AppendTo(result, strings::Split(full, AnyOf(delim)));
-  } else {
-    // The input argument "pieces" specifies the max size that *result should
-    // be. However, the argument to the Limit() delimiter is the max number of
-    // delimiters, which should be one less than "pieces". Example: "a,b,c" has
-    // 3 pieces and two comma delimiters.
-    int limit = std::max(pieces - 1, 0);
-    AppendTo(result, strings::Split(full, Limit(AnyOf(delim), limit)));
-  }
+  back_insert_iterator<vector<string> > it(*result);
+  SplitStringToIteratorAllowEmpty(full, delim, pieces, it);
 }
 
 // ----------------------------------------------------------------------
 // SplitStringAllowEmpty
+// SplitStringToHashsetAllowEmpty
+// SplitStringToSetAllowEmpty
+// SplitStringToHashmapAllowEmpty
 //    Split a string using a character delimiter. Append the components
 //    to 'result'.  If there are consecutive delimiters, this function
 //    will return corresponding empty strings.
 // ----------------------------------------------------------------------
 void SplitStringAllowEmpty(const string& full, const char* delim,
                            vector<string>* result) {
-  AppendTo(result, strings::Split(full, AnyOf(delim)));
+  back_insert_iterator<vector<string> > it(*result);
+  SplitStringToIteratorAllowEmpty(full, delim, 0, it);
+}
+
+void SplitStringToHashsetAllowEmpty(const string& full, const char* delim,
+                                    hash_set<string>* result) {
+  simple_insert_iterator<hash_set<string> > it(result);
+  SplitStringToIteratorAllowEmpty(full, delim, 0, it);
+}
+
+void SplitStringToSetAllowEmpty(const string& full, const char* delim,
+                                set<string>* result) {
+  simple_insert_iterator<set<string> > it(result);
+  SplitStringToIteratorAllowEmpty(full, delim, 0, it);
+}
+
+void SplitStringToHashmapAllowEmpty(const string& full, const char* delim,
+                                    hash_map<string, string>* result) {
+  simple_hash_map_iterator<string> it(result);
+  SplitStringToIteratorAllowEmpty(full, delim, 0, it);
+}
+
+// If we know how much to allocate for a vector of strings, we can
+// allocate the vector<string> only once and directly to the right size.
+// This saves in between 33-66 % of memory space needed for the result,
+// and runs faster in the microbenchmarks.
+//
+// The reserve is only implemented for the single character delim.
+//
+// The implementation for counting is cut-and-pasted from
+// SplitStringToIteratorUsing. I could have written my own counting iterator,
+// and use the existing template function, but probably this is more clear
+// and more sure to get optimized to reasonable code.
+static int CalculateReserveForVector(const string& full, const char* delim) {
+  int count = 0;
+  if (delim[0] != '\0' && delim[1] == '\0') {
+    // Optimize the common case where delim is a single character.
+    char c = delim[0];
+    const char* p = full.data();
+    const char* end = p + full.size();
+    while (p != end) {
+      if (*p == c) {  // This could be optimized with hasless(v,1) trick.
+        ++p;
+      } else {
+        while (++p != end && *p != c) {
+          // Skip to the next occurence of the delimiter.
+        }
+        ++count;
+      }
+    }
+  }
+  return count;
+}
+
+// ----------------------------------------------------------------------
+// SplitStringUsing()
+// SplitStringToHashsetUsing()
+// SplitStringToSetUsing()
+// SplitStringToHashmapUsing()
+//    Split a string using a character delimiter. Append the components
+//    to 'result'.
+//
+// Note: For multi-character delimiters, this routine will split on *ANY* of
+// the characters in the string, not the entire string as a single delimiter.
+// ----------------------------------------------------------------------
+template <typename StringType, typename ITR>
+static inline
+void SplitStringToIteratorUsing(const StringType& full,
+                                const char* delim,
+                                ITR& result) {
+  // Optimize the common case where delim is a single character.
+  if (delim[0] != '\0' && delim[1] == '\0') {
+    char c = delim[0];
+    const char* p = full.data();
+    const char* end = p + full.size();
+    while (p != end) {
+      if (*p == c) {
+        ++p;
+      } else {
+        const char* start = p;
+        while (++p != end && *p != c) {
+          // Skip to the next occurence of the delimiter.
+        }
+        *result++ = StringType(start, p - start);
+      }
+    }
+    return;
+  }
+
+  string::size_type begin_index, end_index;
+  begin_index = full.find_first_not_of(delim);
+  while (begin_index != string::npos) {
+    end_index = full.find_first_of(delim, begin_index);
+    if (end_index == string::npos) {
+      *result++ = full.substr(begin_index);
+      return;
+    }
+    *result++ = full.substr(begin_index, (end_index - begin_index));
+    begin_index = full.find_first_not_of(delim, end_index);
+  }
 }
 
 void SplitStringUsing(const string& full,
                       const char* delim,
                       vector<string>* result) {
-  AppendTo(result, strings::Split(full, AnyOf(delim), strings::SkipEmpty()));
+  result->reserve(result->size() + CalculateReserveForVector(full, delim));
+  back_insert_iterator< vector<string> > it(*result);
+  SplitStringToIteratorUsing(full, delim, it);
 }
 
 void SplitStringToHashsetUsing(const string& full, const char* delim,
                                hash_set<string>* result) {
-  AppendTo(result, strings::Split(full, AnyOf(delim), strings::SkipEmpty()));
+  simple_insert_iterator<hash_set<string> > it(result);
+  SplitStringToIteratorUsing(full, delim, it);
 }
 
 void SplitStringToSetUsing(const string& full, const char* delim,
-                           std::set<string>* result) {
-  AppendTo(result, strings::Split(full, AnyOf(delim), strings::SkipEmpty()));
+                           set<string>* result) {
+  simple_insert_iterator<set<string> > it(result);
+  SplitStringToIteratorUsing(full, delim, it);
 }
 
 void SplitStringToHashmapUsing(const string& full, const char* delim,
                                hash_map<string, string>* result) {
-  AppendTo(result, strings::Split(full, AnyOf(delim), strings::SkipEmpty()));
+  simple_hash_map_iterator<string> it(result);
+  SplitStringToIteratorUsing(full, delim, it);
 }
-
-// ----------------------------------------------------------------------
-// SplitStringPieceToVector()
-//    Split a StringPiece into sub-StringPieces based on delim
-//    and appends the pieces to 'vec'.
-//    If omit empty strings is true, empty strings are omitted
-//    from the resulting vector.
-// ----------------------------------------------------------------------
-void SplitStringPieceToVector(StringPiece full,
-                              const char* delim,
-                              vector<StringPiece>* vec,
-                              bool omit_empty_strings) {
-  if (omit_empty_strings) {
-    AppendTo(vec, strings::Split(full, AnyOf(delim), SkipEmpty()));
-  } else {
-    AppendTo(vec, strings::Split(full, AnyOf(delim)));
-  }
-}
-
-void SplitToVector(char* full, const char* delim, vector<char*>* vec,
-                   bool omit_empty_strings) {
-  char* next  = full;
-  while ((next = gstrsep(&full, delim)) != NULL) {
-    if (omit_empty_strings && next[0] == '\0') continue;
-    vec->push_back(next);
-  }
-  // Add last element (or full string if no delimeter found):
-  if (full != NULL) {
-    vec->push_back(full);
-  }
-}
-
-void SplitToVector(char* full, const char* delim, vector<const char*>* vec,
-                   bool omit_empty_strings) {
-  char* next  = full;
-  while ((next = gstrsep(&full, delim)) != NULL) {
-    if (omit_empty_strings && next[0] == '\0') continue;
-    vec->push_back(next);
-  }
-  // Add last element (or full string if no delimeter found):
-  if (full != NULL) {
-    vec->push_back(full);
-  }
-}
-
-// ----------------------------------------------------------------------
-// SplitOneStringToken()
-//   Mainly a stringified wrapper around strpbrk()
-// ----------------------------------------------------------------------
-string SplitOneStringToken(const char ** source, const char * delim) {
-  assert(source);
-  assert(delim);
-  if (!*source) {
-    return string();
-  }
-  const char * begin = *source;
-  // Optimize the common case where delim is a single character.
-  if (delim[0] != '\0' && delim[1] == '\0') {
-    *source = strchr(*source, delim[0]);
-  } else {
-    *source = strpbrk(*source, delim);
-  }
-  if (*source) {
-    return string(begin, (*source)++);
-  } else {
-    return string(begin);
-  }
-}
-
-// ----------------------------------------------------------------------
-// SplitStringWithEscaping()
-// SplitStringWithEscapingAllowEmpty()
-// SplitStringWithEscapingToSet()
-// SplitStringWithWithEscapingToHashset()
-//   Split the string using the specified delimiters, taking escaping into
-//   account. '\' is not allowed as a delimiter.
-// ----------------------------------------------------------------------
-template <bool allow_empty, typename IN_ITER, typename OUT_ITER>
-static inline
-void SplitStringWithEscapingToIterator(IN_ITER first, IN_ITER last,
-                                       const strings::CharSet& delimiters,
-                                       OUT_ITER result) {
-  CHECK(!delimiters.Test('\\')) << "\\ is not allowed as a delimiter.";
-  string part;
-
-  for ( ; first != last; ++first) {
-    char current_char = *first;
-    if (delimiters.Test(current_char)) {
-      // Push substrings when we encounter delimiters.
-      if (allow_empty || !part.empty()) {
-        *result++ = part;
-        part.clear();
-      }
-      continue;
-    }
-    if (current_char != '\\') {
-      // Just a normal character.
-      part.push_back(current_char);
-      continue;
-    }
-    // We have read a backslash: look ahead if possible.
-    if (++first == last) {
-      // Trailing backslash. Nothing to peek at, just push it and stop.
-      part.push_back('\\');
-      break;
-    }
-    current_char = *first;
-    // The next delimiter or backslash is literal.
-    if (current_char != '\\' && !delimiters.Test(current_char)) {
-      // Don't honor unknown escape sequences: emit \f for \f.
-      part.push_back('\\');
-    }
-    part.push_back(current_char);
-  }
-  // Push the trailing part.
-  if (allow_empty || !part.empty()) {
-    *result++ = part;
-  }
-}
-
-template <bool allow_empty, typename IN_CONTAINER, typename OUT_CONTAINER>
-static inline
-void SplitStringWithEscapingToContainer(const IN_CONTAINER& src,
-                                        const strings::CharSet& delimiters,
-                                        OUT_CONTAINER *result) {
-  SplitStringWithEscapingToIterator<allow_empty>(
-      src.begin(), src.end(), delimiters,
-      std::inserter(*result, result->end()));
-}
-
-void SplitStringWithEscaping(StringPiece full,
-                             const strings::CharSet& delimiters,
-                             vector<string> *result) {
-  SplitStringWithEscapingToContainer<false>(full, delimiters, result);
-}
-
-void SplitStringWithEscapingAllowEmpty(StringPiece full,
-                                       const strings::CharSet& delimiters,
-                                       vector<string> *result) {
-  SplitStringWithEscapingToContainer<true>(full, delimiters, result);
-}
-
-void SplitStringWithEscapingToSet(StringPiece full,
-                                  const strings::CharSet& delimiters,
-                                  std::set<string> *result) {
-  SplitStringWithEscapingToContainer<false>(full, delimiters, result);
-}
-
-void SplitStringWithEscapingToHashset(StringPiece full,
-                                      const strings::CharSet& delimiters,
-                                      hash_set<string> *result) {
-  SplitStringWithEscapingToContainer<false>(full, delimiters, result);
-}
-
 
 // ----------------------------------------------------------------------
 // SplitOneIntToken()
@@ -531,7 +426,7 @@ bool SplitOne##name##Token(const char ** source, const char * delim, \
   /* Advance past token */                                      \
   if (*end != '\0')                                             \
     *source = const_cast<const char *>(end+1);                  \
-  else                                                          \
+   else                                                         \
     *source = NULL;                                             \
   return true;                                                  \
 }
@@ -542,7 +437,7 @@ DEFINE_SPLIT_ONE_NUMBER_TOKEN(Uint32, uint32, strtou32_0)
 DEFINE_SPLIT_ONE_NUMBER_TOKEN(Int64, int64, strto64_0)
 DEFINE_SPLIT_ONE_NUMBER_TOKEN(Uint64, uint64, strtou64_0)
 DEFINE_SPLIT_ONE_NUMBER_TOKEN(Double, double, strtod)
-#ifdef _MSC_VER  // has no strtof()
+#ifdef _WIN32 // has no strtof()
 // Note: does an implicit cast to float.
 DEFINE_SPLIT_ONE_NUMBER_TOKEN(Float, float, strtod)
 #else
@@ -555,419 +450,3 @@ DEFINE_SPLIT_ONE_NUMBER_TOKEN(DecimalInt64, int64, strto64_10)
 DEFINE_SPLIT_ONE_NUMBER_TOKEN(DecimalUint64, uint64, strtou64_10)
 DEFINE_SPLIT_ONE_NUMBER_TOKEN(HexUint32, uint32, strtou32_16)
 DEFINE_SPLIT_ONE_NUMBER_TOKEN(HexUint64, uint64, strtou64_16)
-
-
-// ----------------------------------------------------------------------
-// SplitRange()
-//    Splits a string of the form "<from>-<to>".  Either or both can be
-//    missing.  A raw number (<to>) is interpreted as "<to>-".  Modifies
-//    parameters insofar as they're specified by the string.  RETURNS
-//    true iff the input is a well-formed range.  If it RETURNS false,
-//    from and to remain unchanged.  The range in rangestr should be
-//    terminated either by "\0" or by whitespace.
-// ----------------------------------------------------------------------
-
-#define EOS(ch)  ( (ch) == '\0' || ascii_isspace(ch) )
-bool SplitRange(const char* rangestr, int* from, int* to) {
-  // We need to do the const-cast because strol takes a char**, not const char**
-  char* val = const_cast<char*>(rangestr);
-  if (val == NULL || EOS(*val))  return true;  // we'll say nothingness is ok
-
-  if ( val[0] == '-' && EOS(val[1]) )    // CASE 1: -
-    return true;                         // nothing changes
-
-  if ( val[0] == '-' ) {                 // CASE 2: -<i2>
-    const int int2 = strto32(val+1, &val, 10);
-    if ( !EOS(*val) )  return false;     // not a valid integer
-    *to = int2;                          // only "to" changes
-    return true;
-
-  } else {
-    const int int1 = strto32(val, &val, 10);
-    if ( EOS(*val) || (*val == '-' && EOS(*(val+1))) ) {
-      *from = int1;                      // CASE 3: <i1>, same as <i1>-
-      return true;                       // only "from" changes
-    } else if (*val != '-') {            // not a valid range
-      return false;
-    }
-    const int int2 = strto32(val+1, &val, 10);
-    if ( !EOS(*val) )  return false;     // not a valid integer
-    *from = int1;                        // CASE 4: <i1>-<i2>
-    *to = int2;
-    return true;
-  }
-}
-
-void SplitCSVLineWithDelimiter(char* line, char delimiter,
-                               vector<char*>* cols) {
-  char* end_of_line = line + strlen(line);
-  char* end;
-  char* start;
-
-  for (; line < end_of_line; line++) {
-    // Skip leading whitespace, unless said whitespace is the delimiter.
-    while (ascii_isspace(*line) && *line != delimiter)
-      ++line;
-
-    if (*line == '"' && delimiter == ',') {     // Quoted value...
-      start = ++line;
-      end = start;
-      for (; *line; line++) {
-        if (*line == '"') {
-          line++;
-          if (*line != '"')  // [""] is an escaped ["]
-            break;           // but just ["] is end of value
-        }
-        *end++ = *line;
-      }
-      // All characters after the closing quote and before the comma
-      // are ignored.
-      line = strchr(line, delimiter);
-      if (!line) line = end_of_line;
-    } else {
-      start = line;
-      line = strchr(line, delimiter);
-      if (!line) line = end_of_line;
-      // Skip all trailing whitespace, unless said whitespace is the delimiter.
-      for (end = line; end > start; --end) {
-        if (!ascii_isspace(end[-1]) || end[-1] == delimiter)
-          break;
-      }
-    }
-    const bool need_another_column =
-      (*line == delimiter) && (line == end_of_line - 1);
-    *end = '\0';
-    cols->push_back(start);
-    // If line was something like [paul,] (comma is the last character
-    // and is not proceeded by whitespace or quote) then we are about
-    // to eliminate the last column (which is empty). This would be
-    // incorrect.
-    if (need_another_column)
-      cols->push_back(end);
-
-    assert(*line == '\0' || *line == delimiter);
-  }
-}
-
-void SplitCSVLine(char* line, vector<char*>* cols) {
-  SplitCSVLineWithDelimiter(line, ',', cols);
-}
-
-void SplitCSVLineWithDelimiterForStrings(const string &line,
-                                         char delimiter,
-                                         vector<string> *cols) {
-  // Unfortunately, the interface requires char* instead of const char*
-  // which requires copying the string.
-  char *cline = strndup_with_new(line.c_str(), line.size());
-  vector<char *> v;
-  SplitCSVLineWithDelimiter(cline, delimiter, &v);
-  for (vector<char*>::const_iterator ci = v.begin(); ci != v.end(); ++ci) {
-    cols->push_back(*ci);
-  }
-  delete[] cline;
-}
-
-// ----------------------------------------------------------------------
-namespace {
-
-// Helper class used by SplitStructuredLineInternal.
-class ClosingSymbolLookup {
- public:
-  explicit ClosingSymbolLookup(const char* symbol_pairs)
-      : closing_(),
-        valid_closing_() {
-    // Initialize the opening/closing arrays.
-    for (const char* symbol = symbol_pairs; *symbol != 0; ++symbol) {
-      unsigned char opening = *symbol;
-      ++symbol;
-      // If the string ends before the closing character has been found,
-      // use the opening character as the closing character.
-      unsigned char closing = *symbol != 0 ? *symbol : opening;
-      closing_[opening] = closing;
-      valid_closing_[closing] = true;
-      if (*symbol == 0) break;
-    }
-  }
-
-  // Returns the closing character corresponding to an opening one,
-  // or 0 if the argument is not an opening character.
-  char GetClosingChar(char opening) const {
-    return closing_[static_cast<unsigned char>(opening)];
-  }
-
-  // Returns true if the argument is a closing character.
-  bool IsClosing(char c) const {
-    return valid_closing_[static_cast<unsigned char>(c)];
-  }
-
- private:
-  // Maps an opening character to its closing. If the entry contains 0,
-  // the character is not in the opening set.
-  char closing_[256];
-  // Valid closing characters.
-  bool valid_closing_[256];
-
-  DISALLOW_COPY_AND_ASSIGN(ClosingSymbolLookup);
-};
-
-char* SplitStructuredLineInternal(char* line,
-                                  char delimiter,
-                                  const char* symbol_pairs,
-                                  vector<char*>* cols,
-                                  bool with_escapes) {
-  ClosingSymbolLookup lookup(symbol_pairs);
-
-  // Stack of symbols expected to close the current opened expressions.
-  vector<char> expected_to_close;
-  bool in_escape = false;
-
-  CHECK(cols);
-  cols->push_back(line);
-  char* current;
-  for (current = line; *current; ++current) {
-    char c = *current;
-    if (in_escape) {
-      in_escape = false;
-    } else if (with_escapes && c == '\\') {
-      // We are escaping the next character. Note the escape still appears
-      // in the output.
-      in_escape = true;
-    } else if (expected_to_close.empty() && c == delimiter) {
-      // We don't have any open expression, this is a valid separator.
-      *current = 0;
-      cols->push_back(current + 1);
-    } else if (!expected_to_close.empty() && c == expected_to_close.back()) {
-      // Can we close the currently open expression?
-      expected_to_close.pop_back();
-    } else if (lookup.GetClosingChar(c)) {
-      // If this is an opening symbol, we open a new expression and push
-      // the expected closing symbol on the stack.
-      expected_to_close.push_back(lookup.GetClosingChar(c));
-    } else if (lookup.IsClosing(c)) {
-      // Error: mismatched closing symbol.
-      return current;
-    }
-  }
-  if (!expected_to_close.empty()) {
-    return current;  // Missing closing symbol(s)
-  }
-  return NULL;  // Success
-}
-
-bool SplitStructuredLineInternal(StringPiece line,
-                                 char delimiter,
-                                 const char* symbol_pairs,
-                                 vector<StringPiece>* cols,
-                                 bool with_escapes) {
-  ClosingSymbolLookup lookup(symbol_pairs);
-
-  // Stack of symbols expected to close the current opened expressions.
-  vector<char> expected_to_close;
-  bool in_escape = false;
-
-  CHECK_NOTNULL(cols);
-  cols->push_back(line);
-  for (int i = 0; i < line.size(); ++i) {
-    char c = line[i];
-    if (in_escape) {
-      in_escape = false;
-    } else if (with_escapes && c == '\\') {
-      // We are escaping the next character. Note the escape still appears
-      // in the output.
-      in_escape = true;
-    } else if (expected_to_close.empty() && c == delimiter) {
-      // We don't have any open expression, this is a valid separator.
-      cols->back().remove_suffix(line.size() - i);
-      cols->push_back(StringPiece(line, i + 1));
-    } else if (!expected_to_close.empty() && c == expected_to_close.back()) {
-      // Can we close the currently open expression?
-      expected_to_close.pop_back();
-    } else if (lookup.GetClosingChar(c)) {
-      // If this is an opening symbol, we open a new expression and push
-      // the expected closing symbol on the stack.
-      expected_to_close.push_back(lookup.GetClosingChar(c));
-    } else if (lookup.IsClosing(c)) {
-      // Error: mismatched closing symbol.
-      return false;
-    }
-  }
-  if (!expected_to_close.empty()) {
-    return false;  // Missing closing symbol(s)
-  }
-  return true;  // Success
-}
-
-}  // anonymous namespace
-
-char* SplitStructuredLine(char* line,
-                          char delimiter,
-                          const char *symbol_pairs,
-                          vector<char*>* cols) {
-  return SplitStructuredLineInternal(line, delimiter, symbol_pairs, cols,
-                                     false);
-}
-
-bool SplitStructuredLine(StringPiece line,
-                         char delimiter,
-                         const char* symbol_pairs,
-                         vector<StringPiece>* cols) {
-  return SplitStructuredLineInternal(line, delimiter, symbol_pairs, cols,
-                                     false);
-}
-
-char* SplitStructuredLineWithEscapes(char* line,
-                                     char delimiter,
-                                     const char *symbol_pairs,
-                                     vector<char*>* cols) {
-  return SplitStructuredLineInternal(line, delimiter, symbol_pairs, cols,
-                                     true);
-}
-
-bool SplitStructuredLineWithEscapes(StringPiece line,
-                                     char delimiter,
-                                     const char* symbol_pairs,
-                                     vector<StringPiece>* cols) {
-  return SplitStructuredLineInternal(line, delimiter, symbol_pairs, cols,
-                                     true);
-}
-
-
-// ----------------------------------------------------------------------
-// SplitStringIntoKeyValues()
-// ----------------------------------------------------------------------
-bool SplitStringIntoKeyValues(const string& line,
-                              const string& key_value_delimiters,
-                              const string& value_value_delimiters,
-                              string *key, vector<string> *values) {
-  key->clear();
-  values->clear();
-
-  // find the key string
-  int end_key_pos = line.find_first_of(key_value_delimiters);
-  if (end_key_pos == string::npos) {
-    VLOG(1) << "cannot parse key from line: " << line;
-    return false;    // no key
-  }
-  key->assign(line, 0, end_key_pos);
-
-  // find the values string
-  string remains(line, end_key_pos, line.size() - end_key_pos);
-  int begin_values_pos = remains.find_first_not_of(key_value_delimiters);
-  if (begin_values_pos == string::npos) {
-    VLOG(1) << "cannot parse value from line: " << line;
-    return false;   // no value
-  }
-  string values_string(remains,
-                       begin_values_pos,
-                       remains.size() - begin_values_pos);
-
-  // construct the values vector
-  if (value_value_delimiters.empty()) {  // one value
-    values->push_back(values_string);
-  } else {                               // multiple values
-    SplitStringUsing(values_string, value_value_delimiters.c_str(), values);
-    if (values->size() < 1) {
-      VLOG(1) << "cannot parse value from line: " << line;
-      return false;  // no value
-    }
-  }
-  return true;
-}
-
-bool SplitStringIntoKeyValuePairs(
-    const string& line,
-    const string& key_value_delimiters,
-    const string& key_value_pair_delimiters,
-    vector<std::pair<string, string> >* kv_pairs) {
-  kv_pairs->clear();
-
-  vector<string> pairs;
-  if (key_value_pair_delimiters.empty()) {
-    pairs.push_back(line);
-  } else {
-    SplitStringUsing(line, key_value_pair_delimiters.c_str(), &pairs);
-  }
-
-  bool success = true;
-  for (size_t i = 0; i < pairs.size(); ++i) {
-    string key;
-    vector<string> value;
-    if (!SplitStringIntoKeyValues(pairs[i],
-                                  key_value_delimiters,
-                                  "", &key, &value)) {
-      // Don't return here, to allow for keys without associated
-      // values; just record that our split failed.
-      success = false;
-    }
-    // we expect atmost one value because we passed in an empty vsep to
-    // SplitStringIntoKeyValues
-    DCHECK_LE(value.size(), 1);
-    kv_pairs->push_back(std::make_pair(key, value.empty() ? "" : value[0]));
-  }
-  return success;
-}
-
-// ----------------------------------------------------------------------
-// SplitLeadingDec32Values()
-// SplitLeadingDec64Values()
-//    A simple parser for space-separated decimal int32/int64 values.
-//    Appends parsed integers to the end of the result vector, stopping
-//    at the first unparsable spot.  Skips past leading and repeated
-//    whitespace (does not consume trailing whitespace), and returns
-//    a pointer beyond the last character parsed.
-// --------------------------------------------------------------------
-const char* SplitLeadingDec32Values(const char *str, vector<int32> *result) {
-  for (;;) {
-    char *end = NULL;
-    long value = strtol(str, &end, 10);
-    if (end == str)
-      break;
-    // Limit long values to int32 min/max.  Needed for lp64.
-    if (value > std::numeric_limits<int32>::max()) {
-      value = std::numeric_limits<int32>::max();
-    } else if (value < std::numeric_limits<int32>::min()) {
-      value = std::numeric_limits<int32>::min();
-    }
-    result->push_back(value);
-    str = end;
-    if (!ascii_isspace(*end))
-      break;
-  }
-  return str;
-}
-
-const char* SplitLeadingDec64Values(const char *str, vector<int64> *result) {
-  for (;;) {
-    char *end = NULL;
-    const int64 value = strtoll(str, &end, 10);
-    if (end == str)
-      break;
-    result->push_back(value);
-    str = end;
-    if (!ascii_isspace(*end))
-      break;
-  }
-  return str;
-}
-
-void SplitStringToLines(const char* full,
-                        int max_len,
-                        int num_lines,
-                        vector<string>* result) {
-  if (max_len <= 0) {
-    return;
-  }
-  int pos = 0;
-  for (int i = 0; (i < num_lines || num_lines <= 0); i++) {
-    int cut_at = ClipStringHelper(full+pos, max_len, (i == num_lines - 1));
-    if (cut_at == -1) {
-      result->push_back(string(full+pos));
-      return;
-    }
-    result->push_back(string(full+pos, cut_at));
-    if (i == num_lines - 1 && max_len > kCutStrSize) {
-      result->at(i).append(kCutStr);
-    }
-    pos += cut_at;
-  }
-}

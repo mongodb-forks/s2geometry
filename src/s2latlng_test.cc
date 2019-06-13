@@ -1,26 +1,11 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2latlng.h"
-
-#include <glog/logging.h>
 #include "base/macros.h"
 #include "base/stringprintf.h"
 #include "strings/split.h"
-#include "gtest/gtest.h"
+#include "testing/base/public/gunit.h"
+#include "testing/base/public/benchmark.h"
 #include "s2testing.h"
 
 TEST(S2LatLng, TestBasic) {
@@ -141,3 +126,11 @@ TEST(S2LatLng, TestToStringReturnsString) {
   EXPECT_EQ(S2LatLng::FromDegrees(0, 1).ToStringInDegrees(), s);
 }
 
+
+static void BM_ToPoint(int iters) {
+    S2LatLng ll(S1Angle::E7(0x150bc888), S1Angle::E7(0x5099d63f));
+    for (int i = 0; i < iters; i++) {
+      ll.ToPoint();
+    }
+}
+BENCHMARK(BM_ToPoint);

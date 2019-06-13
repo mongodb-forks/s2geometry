@@ -1,37 +1,19 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2CELLUNION_H_
 #define UTIL_GEOMETRY_S2CELLUNION_H_
 
 #include <vector>
+using std::vector;
 
 #include "base/integral_types.h"
-#include <glog/logging.h>
+#include "base/logging.h"
 #include "base/macros.h"
-#include "s2.h"
-#include "s2cellid.h"
 #include "s2region.h"
+#include "s2cellid.h"
 
-class Decoder;
-class Encoder;
 class S1Angle;
-class S2Cap;
 class S2Cell;
-class S2LatLngRect;
 
 // An S2CellUnion is a region consisting of cells of various sizes.  Typically
 // a cell union is used to approximate some other shape.  There is a tradeoff
@@ -48,32 +30,33 @@ class S2CellUnion : public S2Region {
   // then calls Normalize().  The InitSwap() version takes ownership of the
   // vector data without copying and clears the given vector.  These methods
   // may be called multiple times.
-  // TODO(user): Update these to use std::vector. Doing so breaks
-  //   :pywraps2_test
-  void Init(std::vector<S2CellId> const& cell_ids);
-  void Init(std::vector<uint64> const& cell_ids);
-  void InitSwap(std::vector<S2CellId>* cell_ids);
+  void Init(vector<S2CellId> const& cell_ids);
+  void Init(vector<uint64> const& cell_ids);
+  void InitSwap(vector<S2CellId>* cell_ids);
 
   // Like Init(), but does not call Normalize().  The cell union *must* be
   // normalized before doing any calculations with it, so it is the caller's
   // responsibility to make sure that the input is normalized.  This method is
   // useful when converting cell unions to another representation and back.
   // These methods may be called multiple times.
-  void InitRaw(std::vector<S2CellId> const& cell_ids);
-  void InitRaw(std::vector<uint64> const& cell_ids);
-  void InitRawSwap(std::vector<S2CellId>* cell_ids);
+  void InitRaw(vector<S2CellId> const& cell_ids);
+  void InitRaw(vector<uint64> const& cell_ids);
+  void InitRawSwap(vector<S2CellId>* cell_ids);
+
+  // Adds the given S2CellIds to the covered region and calls Normalize()
+  void Add(const vector<S2CellId>& cell_ids);
 
   // Gives ownership of the vector data to the client without copying, and
   // clears the content of the cell union.  The original data in cell_ids
   // is lost if there was any.  This is the opposite of InitRawSwap().
-  void Detach(std::vector<S2CellId>* cell_ids);
+  void Detach(vector<S2CellId>* cell_ids);
 
   // Convenience methods for accessing the individual cell ids.
   int num_cells() const { return cell_ids_.size(); }
   S2CellId const& cell_id(int i) const { return cell_ids_[i]; }
 
   // Direct access to the underlying vector for STL algorithms.
-  std::vector<S2CellId> const& cell_ids() const { return cell_ids_; }
+  vector<S2CellId> const& cell_ids() const { return cell_ids_; }
 
   // Normalizes the cell union by discarding cells that are contained by other
   // cells, replacing groups of 4 child cells by their parent cell whenever
@@ -96,7 +79,7 @@ class S2CellUnion : public S2Region {
   // converted back to the original list of cell ids that satisfies the
   // desired constraints.
   void Denormalize(int min_level, int level_mod,
-                   std::vector<S2CellId>* output) const;
+                   vector<S2CellId>* output) const;
 
   // If there are more than "excess" elements of the cell_ids() vector that
   // are allocated but unused, reallocate the array to eliminate the excess
@@ -107,11 +90,11 @@ class S2CellUnion : public S2Region {
   // Return true if the cell union contains the given cell id.  Containment is
   // defined with respect to regions, e.g. a cell contains its 4 children.
   // This is a fast operation (logarithmic in the size of the cell union).
-  bool Contains(S2CellId id) const;
+  bool Contains(S2CellId const& id) const;
 
   // Return true if the cell union intersects the given cell id.
   // This is a fast operation (logarithmic in the size of the cell union).
-  bool Intersects(S2CellId id) const;
+  bool Intersects(S2CellId const& id) const;
 
   // Return true if this cell union contain/intersects the given other cell
   // union.
@@ -128,7 +111,7 @@ class S2CellUnion : public S2Region {
   // Specialized version of GetIntersection() that gets the intersection of a
   // cell union with the given cell id.  This can be useful for "splitting" a
   // cell union into chunks.
-  void GetIntersection(S2CellUnion const* x, S2CellId id);
+  void GetIntersection(S2CellUnion const* x, S2CellId const& id);
 
   // Expands the cell union by adding a "rim" of cells on expand_level
   // around the union boundary.
@@ -157,20 +140,13 @@ class S2CellUnion : public S2Region {
   // largest cell.  Note that in the worst case, the number of cells in the
   // output can be up to 4 * (1 + 2 ** max_level_diff) times larger than the
   // number of cells in the input.
-  void Expand(S1Angle min_radius, int max_level_diff);
+  void Expand(S1Angle const& min_radius, int max_level_diff);
 
   // Create a cell union that corresponds to a continuous range of cell ids.
   // The output is a normalized collection of cell ids that covers the leaf
   // cells between "min_id" and "max_id" inclusive.
-  // TODO(ericv): Rename this method to InitFromMinMax().
-  // REQUIRES: min_id.is_leaf(), max_id.is_leaf(), min_id <= max_id.
-  void InitFromRange(S2CellId min_id, S2CellId max_id);
-
-  // Like InitFromRange(), except that the union covers the range of leaf
-  // cells from "begin" (inclusive) to "end" (exclusive), as with Python
-  // ranges or STL iterator ranges.  If (begin == end) the result is empty.
-  // REQUIRES: begin.is_leaf(), end.is_leaf(), begin <= end.
-  void InitFromBeginEnd(S2CellId begin, S2CellId end);
+  // Requires: min_id.is_leaf(), max_id.is_leaf(), min_id <= max_id.
+  void InitFromRange(S2CellId const& min_id, S2CellId const& max_id);
 
   // The number of leaf cells covered by the union.
   // This will be no more than 6*2^60 for the whole sphere.
@@ -214,7 +190,7 @@ class S2CellUnion : public S2Region {
   }
 
   virtual void Encode(Encoder* const encoder) const {
-    LOG(FATAL) << "Unimplemented";
+    S2LOG(FATAL) << "Unimplemented";
   }
   virtual bool Decode(Decoder* const decoder) { return false; }
 
@@ -223,9 +199,9 @@ class S2CellUnion : public S2Region {
   bool Contains(S2Point const& p) const;
 
  private:
-  std::vector<S2CellId> cell_ids_;
+  vector<S2CellId> cell_ids_;
 
-  DISALLOW_COPY_AND_ASSIGN(S2CellUnion);
+  DISALLOW_EVIL_CONSTRUCTORS(S2CellUnion);
 };
 
 // Return true if two cell unions are identical.

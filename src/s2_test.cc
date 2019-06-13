@@ -1,53 +1,29 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
-#include "s2.h"
-
-#include <stddef.h>
 #include <algorithm>
 #include <functional>
-#include <ext/hash_map>
-using __gnu_cxx::hash;
-using __gnu_cxx::hash_map;
-#include <ext/hash_set>
-using __gnu_cxx::hash;
-using __gnu_cxx::hash_set;
-#include <iterator>
-#include <vector>
+using namespace std;
+using std::min;
+using std::max;
+using std::swap;
+using std::reverse;
 
-#include "base/casts.h"
-#include "base/integral_types.h"
-#include <glog/logging.h>
-#include "gtest/gtest.h"
-#include "s2cell.h"
-#include "s2cellid.h"
-#include "s2edgeutil.h"
+#include <hash_set>
+#include <hash_map>
+using __gnu_cxx::hash_set;
+
+#include "s2.h"
+#include "base/logging.h"
 #include "s2latlng.h"
 #include "s2testing.h"
-#include "util/math/matrix3x3.h"
+#include "util/math/matrix3x3-inl.h"
+#include "gtest/gtest.h"
 
-using std::max;
-using std::min;
-using std::vector;
-
-inline static int SwapAxes(int ij) {
+static inline int SwapAxes(int ij) {
   return ((ij >> 1) & 1) + ((ij & 1) << 1);
 }
 
-inline static int InvertBits(int ij) {
+static inline int InvertBits(int ij) {
   return ij ^ 3;
 }
 
@@ -118,71 +94,6 @@ TEST(S2, FaceUVtoXYZ) {
   }
 }
 
-TEST(S2, FaceXYZtoUVW) {
-  for (int face = 0; face < 6; ++face) {
-    EXPECT_EQ(S2Point( 0,  0,  0), S2::FaceXYZtoUVW(face, S2Point(0, 0, 0)));
-    EXPECT_EQ(S2Point( 1,  0,  0), S2::FaceXYZtoUVW(face,  S2::GetUAxis(face)));
-    EXPECT_EQ(S2Point(-1,  0,  0), S2::FaceXYZtoUVW(face, -S2::GetUAxis(face)));
-    EXPECT_EQ(S2Point( 0,  1,  0), S2::FaceXYZtoUVW(face,  S2::GetVAxis(face)));
-    EXPECT_EQ(S2Point( 0, -1,  0), S2::FaceXYZtoUVW(face, -S2::GetVAxis(face)));
-    EXPECT_EQ(S2Point( 0,  0,  1), S2::FaceXYZtoUVW(face,  S2::GetNorm(face)));
-    EXPECT_EQ(S2Point( 0,  0, -1), S2::FaceXYZtoUVW(face, -S2::GetNorm(face)));
-  }
-}
-
-TEST(S2, XYZToFaceSiTi) {
-  // Check the conversion of random cells to center points and back.
-  for (int level = 0; level <= S2CellId::kMaxLevel; ++level) {
-    for (int i = 0; i < 1000; ++i) {
-      S2CellId id = S2Testing::GetRandomCellId(level);
-      int face;
-      unsigned int si, ti;
-      int actual_level = S2::XYZtoFaceSiTi(id.ToPoint(), &face, &si, &ti);
-      EXPECT_EQ(level, actual_level);
-      S2CellId actual_id =
-          S2CellId::FromFaceIJ(face, si / 2, ti / 2).parent(level);
-      EXPECT_EQ(id, actual_id);
-
-      // Now test a point near the cell center but not equal to it.
-      S2Point p_moved = id.ToPoint() + S2Point(1e-13, 1e-13, 1e-13);
-      int face_moved;
-      unsigned int si_moved, ti_moved;
-      actual_level = S2::XYZtoFaceSiTi(p_moved, &face_moved, &si_moved,
-                                       &ti_moved);
-      EXPECT_EQ(-1, actual_level);
-      EXPECT_EQ(face, face_moved);
-      EXPECT_EQ(si, si_moved);
-      EXPECT_EQ(ti, ti_moved);
-
-      // Finally, test some random (si,ti) values that may be at different
-      // levels, or not at a valid level at all (for example, si == 0).
-      int face_random = S2Testing::rnd.Uniform(S2CellId::kNumFaces);
-      unsigned int si_random, ti_random;
-      unsigned int mask = -1 << (S2CellId::kMaxLevel - level);
-      do {
-        si_random = S2Testing::rnd.Rand32() & mask;
-        ti_random = S2Testing::rnd.Rand32() & mask;
-      } while (si_random > S2::kMaxSiTi || ti_random > S2::kMaxSiTi);
-      S2Point p_random = S2::FaceSiTitoXYZ(face_random, si_random, ti_random);
-      actual_level = S2::XYZtoFaceSiTi(p_random, &face, &si, &ti);
-      if (face != face_random) {
-        // The chosen point is on the edge of a top-level face cell.
-        EXPECT_EQ(-1, actual_level);
-        EXPECT_TRUE(si == 0 || si == S2::kMaxSiTi ||
-                    ti == 0 || ti == S2::kMaxSiTi);
-      } else {
-        EXPECT_EQ(si_random, si);
-        EXPECT_EQ(ti_random, ti);
-        if (actual_level >= 0) {
-          EXPECT_EQ(p_random,
-                    S2CellId::FromFaceIJ(face, si / 2, ti / 2).
-                    parent(actual_level).ToPoint());
-        }
-      }
-    }
-  }
-}
-
 TEST(S2, UVNorms) {
   // Check that GetUNorm and GetVNorm compute right-handed normals for
   // an edge in the increasing U or V direction.
@@ -198,39 +109,17 @@ TEST(S2, UVNorms) {
   }
 }
 
-TEST(S2, UVWAxis) {
+TEST(S2, UVAxes) {
+  // Check that axes are consistent with FaceUVtoXYZ.
   for (int face = 0; face < 6; ++face) {
-    // Check that axes are consistent with FaceUVtoXYZ.
-    EXPECT_EQ(S2::FaceUVtoXYZ(face, 1, 0) - S2::FaceUVtoXYZ(face, 0, 0),
-              S2::GetUAxis(face));
-    EXPECT_EQ(S2::FaceUVtoXYZ(face, 0, 1) - S2::FaceUVtoXYZ(face, 0, 0),
-              S2::GetVAxis(face));
-    EXPECT_EQ(S2::FaceUVtoXYZ(face, 0, 0), S2::GetNorm(face));
-
-    // Check that every face coordinate frame is right-handed.
-    EXPECT_EQ(1, S2::GetUAxis(face).CrossProd(S2::GetVAxis(face))
-              .DotProd(S2::GetNorm(face)));
-
-    // Check that GetUVWAxis is consistent with GetUAxis, GetVAxis, GetNorm.
-    EXPECT_EQ(S2::GetUAxis(face), S2::GetUVWAxis(face, 0));
-    EXPECT_EQ(S2::GetVAxis(face), S2::GetUVWAxis(face, 1));
-    EXPECT_EQ(S2::GetNorm(face), S2::GetUVWAxis(face, 2));
+    EXPECT_EQ(S2::GetUAxis(face),
+              S2::FaceUVtoXYZ(face, 1, 0) - S2::FaceUVtoXYZ(face, 0, 0));
+    EXPECT_EQ(S2::GetVAxis(face),
+              S2::FaceUVtoXYZ(face, 0, 1) - S2::FaceUVtoXYZ(face, 0, 0));
   }
 }
 
-TEST(S2, UVWFace) {
-  // Check that GetUVWFace is consistent with GetUVWAxis.
-  for (int face = 0; face < 6; ++face) {
-    for (int axis = 0; axis < 3; ++axis) {
-      EXPECT_EQ(S2::GetFace(-S2::GetUVWAxis(face, axis)),
-                S2::GetUVWFace(face, axis, 0));
-      EXPECT_EQ(S2::GetFace(S2::GetUVWAxis(face, axis)),
-                S2::GetUVWFace(face, axis, 1));
-    }
-  }
-}
-
-TEST(S2, AngleMethods) {
+TEST(S2, AnglesAreas) {
   S2Point pz(0, 0, 1);
   S2Point p000(1, 0, 0);
   S2Point p045 = S2Point(1, 1, 0).Normalize();
@@ -238,27 +127,17 @@ TEST(S2, AngleMethods) {
   S2Point p180(-1, 0, 0);
 
   EXPECT_DOUBLE_EQ(S2::Angle(p000, pz, p045), M_PI_4);
-  EXPECT_DOUBLE_EQ(S2::TurnAngle(p000, pz, p045), -3 * M_PI_4);
-
   EXPECT_DOUBLE_EQ(S2::Angle(p045, pz, p180), 3 * M_PI_4);
-  EXPECT_DOUBLE_EQ(S2::TurnAngle(p045, pz, p180), -M_PI_4);
-
   EXPECT_DOUBLE_EQ(S2::Angle(p000, pz, p180), M_PI);
-  EXPECT_DOUBLE_EQ(S2::TurnAngle(p000, pz, p180), 0);
-
-  EXPECT_DOUBLE_EQ(S2::Angle(pz, p000, p045), M_PI_2);
-  EXPECT_DOUBLE_EQ(S2::TurnAngle(pz, p000, p045), M_PI_2);
-
   EXPECT_DOUBLE_EQ(S2::Angle(pz, p000, pz), 0);
-  EXPECT_DOUBLE_EQ(fabs(S2::TurnAngle(pz, p000, pz)), M_PI);
-}
+  EXPECT_DOUBLE_EQ(S2::Angle(pz, p000, p045), M_PI_2);
 
-TEST(S2, AreaMethods) {
-  S2Point pz(0, 0, 1);
-  S2Point p000(1, 0, 0);
-  S2Point p045 = S2Point(1, 1, 0).Normalize();
-  S2Point p090(0, 1, 0);
-  S2Point p180(-1, 0, 0);
+  EXPECT_DOUBLE_EQ(S2::TurnAngle(p000, pz, p045), -3 * M_PI_4);
+  EXPECT_DOUBLE_EQ(S2::TurnAngle(p045, pz, p180), -M_PI_4);
+  EXPECT_DOUBLE_EQ(S2::TurnAngle(p180, pz, p045), M_PI_4);
+  EXPECT_DOUBLE_EQ(S2::TurnAngle(p000, pz, p180), 0);
+  EXPECT_DOUBLE_EQ(fabs(S2::TurnAngle(pz, p000, pz)), M_PI);
+  EXPECT_DOUBLE_EQ(S2::TurnAngle(pz, p000, p045), M_PI_2);
 
   EXPECT_DOUBLE_EQ(S2::Area(p000, p090, pz), M_PI_2);
   EXPECT_DOUBLE_EQ(S2::Area(p045, pz, p180), 3 * M_PI_4);
@@ -319,18 +198,21 @@ TEST(S2, AreaMethods) {
   EXPECT_DOUBLE_EQ(quarter_area2, M_PI);
 
   // Compute the area of a hemisphere using four triangles with one near-180
-  // degree edge and one near-degenerate edge.
+  // degree edge and one near-degenerate edge.  This test fails in optimized
+  // mode unless GirardArea uses RobustCrossProd(), because the compiler
+  // doesn't compute all the inlined CrossProd() calls with the same level of
+  // accuracy (some intermediate values are spilled to 64-bit temporaries).
   for (int i = 0; i < 100; ++i) {
     double lng = 2 * M_PI * S2Testing::rnd.RandDouble();
-    S2Point p0 = S2LatLng::FromRadians(1e-20, lng).Normalized().ToPoint();
+    S2Point p0 = S2LatLng::FromRadians(1e-12, lng).Normalized().ToPoint();
     S2Point p1 = S2LatLng::FromRadians(0, lng).Normalized().ToPoint();
     double p2_lng = lng + S2Testing::rnd.RandDouble();
     S2Point p2 = S2LatLng::FromRadians(0, p2_lng).Normalized().ToPoint();
     S2Point p3 = S2LatLng::FromRadians(0, lng + M_PI).Normalized().ToPoint();
-    S2Point p4 = S2LatLng::FromRadians(0, lng + 5.0).Normalized().ToPoint();
+    S2Point p4 = S2LatLng::FromRadians(0, lng + 4.0).Normalized().ToPoint();
     double area = (S2::Area(p0, p1, p2) + S2::Area(p0, p2, p3) +
                    S2::Area(p0, p3, p4) + S2::Area(p0, p4, p1));
-    EXPECT_NEAR(area, 2 * M_PI, 2e-15);
+    EXPECT_NEAR(area, 2 * M_PI, 1e-14);
   }
 }
 
@@ -338,7 +220,7 @@ TEST(S2, TrueCentroid) {
   // Test TrueCentroid() with very small triangles.  This test assumes that
   // the triangle is small enough so that it is nearly planar.
   for (int i = 0; i < 100; ++i) {
-    Vector3_d p, x, y;
+    S2Point p, x, y;
     S2Testing::GetRandomFrame(&p, &x, &y);
     double d = 1e-4 * pow(1e-4, S2Testing::rnd.RandDouble());
     S2Point p0 = (p - d * x).Normalize();
@@ -353,7 +235,7 @@ TEST(S2, TrueCentroid) {
   }
 }
 
-TEST(RobustCCW, CollinearPoints) {
+TEST(RobustCCW, ColinearPoints) {
   // The following points happen to be *exactly collinear* along a line that it
   // approximate tangent to the surface of the unit sphere.  In fact, C is the
   // exact midpoint of the line segment AB.  All of these points are close
@@ -492,12 +374,12 @@ class RobustCCWTest : public testing::Test {
   // The following method is used to sort a collection of points in CCW order
   // around a given origin.  It returns true if A comes before B in the CCW
   // ordering (starting at an arbitrary fixed direction).
-  class LessCCW {
+  class LessCCW : public binary_function<S2Point const&, S2Point const&, bool> {
    public:
     LessCCW(S2Point const& origin, S2Point const& start)
         : origin_(origin), start_(start) {
     }
-    bool operator()(S2Point const& a, S2Point const& b) const {
+    bool operator()(S2Point const& a, S2Point const& b) {
       // OrderedCCW() acts like "<=", so we need to invert the comparison.
       return !S2::OrderedCCW(start_, b, a, origin_);
     }
@@ -513,12 +395,11 @@ class RobustCCWTest : public testing::Test {
                       vector<S2Point>* sorted) {
     // Make a copy of the points with "origin" removed.
     sorted->clear();
-    std::remove_copy(points.begin(), points.end(), back_inserter(*sorted),
-                     origin);
+    remove_copy(points.begin(), points.end(), back_inserter(*sorted), origin);
 
     // Sort the points CCW around the origin starting at (*sorted)[0].
     LessCCW less(origin, (*sorted)[0]);
-    std::sort(sorted->begin(), sorted->end(), less);
+    sort(sorted->begin(), sorted->end(), less);
   }
 
   // Given a set of points sorted circularly CCW around "origin", and the
@@ -562,7 +443,7 @@ class RobustCCWTest : public testing::Test {
     // should be CCW.
     EXPECT_EQ(n * (n-1) / 2, total_num_ccw);
   }
-
+      
   static void AddNormalized(S2Point const& a, vector<S2Point>* points) {
     points->push_back(a.Normalize());
   }
@@ -572,7 +453,7 @@ class RobustCCWTest : public testing::Test {
   // (i.e. even with infinite-precision arithmetic).
   static void AddTangentPoints(S2Point const& a, S2Point const& b,
                                vector<S2Point>* points) {
-    Vector3_d dir = S2::RobustCrossProd(a, b).CrossProd(a).Normalize();
+    S2Point dir = S2::RobustCrossProd(a, b).CrossProd(a).Normalize();
     if (dir == S2Point(0, 0, 0)) return;
     for (;;) {
       S2Point delta = 1e-15 * S2Testing::rnd.RandDouble() * dir;
@@ -596,8 +477,8 @@ class RobustCCWTest : public testing::Test {
       case 0:
         // Add a random point (not uniformly distributed) along the great
         // circle AB.
-        AddNormalized(rnd->UniformDouble(-1, 1) * a +
-                      rnd->UniformDouble(-1, 1) * b, points);
+        AddNormalized((2 * rnd->RandDouble() - 1) * a +
+                      (2 * rnd->RandDouble() - 1) * b, points);
         break;
       case 1:
         // Perturb one coordinate by the minimum amount possible.
@@ -606,7 +487,7 @@ class RobustCCWTest : public testing::Test {
         break;
       case 2:
         // Perturb one coordinate by up to 1e-15.
-        a[coord] += 1e-15 * rnd->UniformDouble(-1, 1);
+        a[coord] += 1e-15 * (2 * rnd->RandDouble() - 1);
         AddNormalized(a, points);
         break;
       case 3:
@@ -619,7 +500,7 @@ class RobustCCWTest : public testing::Test {
         // Add the intersection point of AB with X=0, Y=0, or Z=0.
         S2Point dir(0, 0, 0);
         dir[coord] = rnd->OneIn(2) ? 1 : -1;
-        Vector3_d norm = S2::RobustCrossProd(a, b).Normalize();
+        S2Point norm = S2::RobustCrossProd(a, b).Normalize();
         if (norm.Norm2() > 0) {
           AddNormalized(S2::RobustCrossProd(dir, norm), points);
         }
@@ -659,20 +540,20 @@ class RobustCCWTest : public testing::Test {
     vector<S2Point> points;
     points.push_back(a);
     points.push_back(b);
-    while (points.size() < n) {
+    while (points.size() < (size_t)n) {
       AddDegeneracy(&points);
     }
     // Remove any (0, 0, 0) points that were accidentically created, then sort
     // the points and remove duplicates.
-    points.erase(std::remove(points.begin(), points.end(), S2Point(0, 0, 0)),
+    points.erase(remove(points.begin(), points.end(), S2Point(0, 0, 0)),
                  points.end());
-    std::sort(points.begin(), points.end());
-    points.erase(std::unique(points.begin(), points.end()), points.end());
-    EXPECT_GE(points.size(), n / 2);
+    sort(points.begin(), points.end());
+    points.erase(unique(points.begin(), points.end()), points.end());
+    EXPECT_GE((int)points.size(), n / 2);
 
     SortAndTest(points, a);
     SortAndTest(points, b);
-    for (int k = 0; k < points.size(); ++k) {
+    for (size_t k = 0; k < points.size(); ++k) {
       SortAndTest(points, points[k]);
     }
   }
@@ -704,47 +585,6 @@ TEST_F(RobustCCWTest, StressTest) {
   }
 }
 
-class StableCCWTest : public testing::Test {
- protected:
-  // Estimate the probability that S2::StableCCW() will not be able to compute
-  // the determinant sign of a triangle A, B, C consisting of three points
-  // that are as collinear as possible and spaced the given distance apart.
-  double GetFailureRate(double km) {
-    int const kIters = 1000;
-    int failure_count = 0;
-    double m = tan(S2Testing::KmToAngle(km).radians());
-    for (int iter = 0; iter < kIters; ++iter) {
-      S2Point a, x, y;
-      S2Testing::GetRandomFrame(&a, &x, &y);
-      S2Point b = (a - m * x).Normalize();
-      S2Point c = (a + m * x).Normalize();
-      int sign = S2::StableCCW(a, b, c);
-      if (sign != 0) {
-        EXPECT_EQ(S2::ExactCCW(a, b, c), sign);
-      } else {
-        ++failure_count;
-      }
-    }
-    double rate = static_cast<double>(failure_count) / kIters;
-    LOG(INFO) << "StableCCW failure rate for " << km << " km = " << rate;
-    return rate;
-  }
-};
-
-TEST_F(StableCCWTest, FailureRate) {
-  // Verify that StableCCW() is able to handle most cases where the three
-  // points are as collinear as possible.  (For reference, TriageCCW() fails
-  // virtually 100% of the time on this test.)
-  //
-  // Note that the failure rate *decreases* as the points get closer together,
-  // and the decrease is approximately linear.  For example, the failure rate
-  // is 0.4% for collinear points spaced 1km apart, but only 0.0004% for
-  // collinear points spaced 1 meter apart.
-
-  EXPECT_LT(GetFailureRate(1.0), 0.01);  //  1km spacing: <  1% (actual 0.4%)
-  EXPECT_LT(GetFailureRate(10.0), 0.1);  // 10km spacing: < 10% (actual 4%)
-}
-
 // Note: obviously, I could have defined a bundle of metrics like this in the
 // S2 class itself rather than just for testing.  However, it's not clear that
 // this is useful other than for testing purposes, and I find
@@ -762,9 +602,6 @@ class MetricBundle {
   Metric const& min_;
   Metric const& max_;
   Metric const& avg_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(MetricBundle);
 };
 
 template<int dim>
@@ -827,6 +664,7 @@ TEST(S2, Metrics) {
 
     // Check boundary cases (exactly equal to a threshold value).
     int expected_level = max(0, min(S2CellId::kMaxLevel, level));
+    cout << "width " << width << " has expected level " << expected_level << endl;
     EXPECT_EQ(S2::kMinWidth.GetMinLevel(width), expected_level);
     EXPECT_EQ(S2::kMinWidth.GetMaxLevel(width), expected_level);
     EXPECT_EQ(S2::kMinWidth.GetClosestLevel(width), expected_level);
@@ -868,56 +706,12 @@ TEST(S2, Frames) {
   EXPECT_TRUE(S2::ApproxEquals(S2::FromFrame(m, S2Point(0, 0, 1)), m.Col(2)));
 }
 
-static void TestRotate(S2Point const& p, S2Point const& axis, S1Angle angle) {
-  S2Point result = S2::Rotate(p, axis, angle);
-
-  // "result" should be unit length.
-  EXPECT_TRUE(S2::IsUnitLength(result));
-
-  // "result" and "p" should be the same distance from "axis".
-  double kMaxPositionError = 1e-15;
-  EXPECT_LE((S1Angle(result, axis) - S1Angle(p, axis)).abs().radians(),
-            kMaxPositionError);
-
-  // Check that the rotation angle is correct.  We allow a fixed error in the
-  // *position* of the result, so we need to convert this into a rotation
-  // angle.  The allowable error can be very large as "p" approaches "axis".
-  double axis_distance = p.CrossProd(axis).Norm();
-  double max_rotation_error;
-  if (axis_distance < kMaxPositionError) {
-    max_rotation_error = 2 * M_PI;
-  } else {
-    max_rotation_error = asin(kMaxPositionError / axis_distance);
-  }
-  double actual_rotation = S2::TurnAngle(p, axis, result) + M_PI;
-  double rotation_error = remainder(angle.radians() - actual_rotation,
-                                    2 * M_PI);
-  EXPECT_LE(rotation_error, max_rotation_error);
-}
-
-TEST(S2, Rotate) {
-  for (int iter = 0; iter < 1000; ++iter) {
-    S2Point axis = S2Testing::RandomPoint();
-    S2Point target = S2Testing::RandomPoint();
-    // Choose a distance whose logarithm is uniformly distributed.
-    double distance = M_PI * pow(1e-15, S2Testing::rnd.RandDouble());
-    // Sometimes choose points near the far side of the axis.
-    if (S2Testing::rnd.OneIn(5)) distance = M_PI - distance;
-    S2Point p = S2EdgeUtil::InterpolateAtDistance(S1Angle::Radians(distance),
-                                                  axis, target);
-    // Choose the rotation angle.
-    double angle = 2 * M_PI * pow(1e-15, S2Testing::rnd.RandDouble());
-    if (S2Testing::rnd.OneIn(3)) angle = -angle;
-    if (S2Testing::rnd.OneIn(10)) angle = 0;
-    TestRotate(p, axis, S1Angle::Radians(angle));
-  }
-}
-
+#if 0
 TEST(S2, S2PointHashSpreads) {
   int kTestPoints = 1 << 16;
   hash_set<size_t> set;
-  hash_set<S2Point, HashS2Point> points;
-  HashS2Point hasher;
+  hash_set<S2Point> points;
+  hash<S2Point> hasher;
   S2Point base = S2Point(1, 1, 1);
   for (int i = 0; i < kTestPoints; ++i) {
     // All points in a tiny cap to test avalanche property of hash
@@ -928,99 +722,22 @@ TEST(S2, S2PointHashSpreads) {
     points.insert(perturbed);
   }
   // A real collision is extremely unlikely.
-  EXPECT_EQ(0, kTestPoints - points.size());
+  EXPECT_EQ((size_t)0, kTestPoints - points.size());
   // Allow a few for the hash.
-  EXPECT_GE(10, kTestPoints - set.size());
+  EXPECT_GE((size_t)10, kTestPoints - set.size());
 }
+#endif
 
 TEST(S2, S2PointHashCollapsesZero) {
   double zero = 0;
   double minus_zero = -zero;
-  EXPECT_NE(bit_cast<uint64>(zero), bit_cast<uint64>(minus_zero));
-  hash_map<S2Point, int, HashS2Point> map;
+  EXPECT_NE(*reinterpret_cast<uint64 const*>(&zero),
+            *reinterpret_cast<uint64 const*>(&minus_zero));
+  hash_map<S2Point, int> map;
   S2Point zero_pt(zero, zero, zero);
   S2Point minus_zero_pt(minus_zero, minus_zero, minus_zero);
 
   map[zero_pt] = 1;
   map[minus_zero_pt] = 2;
-  ASSERT_EQ(1, map.size());
-}
-
-static double FlipDoubleLowOrderBit(double x) {
-  return bit_cast<double>(bit_cast<uint64>(x) ^ 0x1);
-}
-
-TEST(S2, S2PointHashCollapsesLowOrderBit) {
-  S2Point p1(1.0, 2.0, 3.0);
-  S2Point p2(FlipDoubleLowOrderBit(p1.x()),
-             FlipDoubleLowOrderBit(p1.y()),
-             FlipDoubleLowOrderBit(p1.z()));
-  EXPECT_EQ(HashS2Point()(p1), HashS2Point()(p2));
-}
-
-// Given a point P, return the minimum level at which an edge of some S2Cell
-// parent of P is nearly collinear with S2::Origin().  This is the minimum
-// level for which RobustCCW() may need to resort to expensive calculations in
-// order to determine which side of an edge the origin lies on.
-static int GetMinExpensiveLevel(S2Point const& p) {
-  S2CellId id = S2CellId::FromPoint(p);
-  for (int level = 0; level <= S2CellId::kMaxLevel; ++level) {
-    S2Cell cell(id.parent(level));
-    for (int k = 0; k < 4; ++k) {
-      S2Point a = cell.GetVertex(k);
-      S2Point b = cell.GetVertex((k + 1) & 3);
-      if (S2::TriageCCW(a, b, S2::Origin(), a.CrossProd(b)) == 0) {
-        return level;
-      }
-    }
-  }
-  return S2CellId::kMaxLevel + 1;
-}
-
-TEST(S2, OriginTest) {
-  // To minimize the number of expensive RobustCCW() calculations,
-  // S2::Origin() should not be nearly collinear with any commonly used edges.
-  // Two important categories of such edges are:
-  //
-  //  - edges along a line of longitude (reasonably common geographically)
-  //  - S2Cell edges (used extensively when computing S2Cell coverings)
-  //
-  // This implies that the origin:
-  //
-  //  - should not be too close to either pole (since all lines of longitude
-  //    converge at the poles)
-  //  - should not be colinear with edges of any S2Cell except for very small
-  //    ones (which are used less frequently)
-  //
-  // The point chosen below is about 66km from the north pole towards the East
-  // Siberian Sea.  The purpose of the STtoUV(2/3) calculation is to keep the
-  // origin as far away as possible from the longitudinal edges of large
-  // S2Cells.  (The line of longitude through the chosen point is always 1/3
-  // or 2/3 of the way across any S2Cell with longitudinal edges that it
-  // passes through.)
-
-  EXPECT_EQ(S2Point(-0.01, 0.01 * S2::STtoUV(2./3), 1).Normalize(),
-            S2::Origin());
-
-  // Check that the origin is not too close to either pole.  (We don't use
-  // S2Earth because we don't want to depend on that package.)
-  double distance_km = acos(S2::Origin().z()) * S2Testing::kEarthRadiusKm;
-  EXPECT_GE(distance_km, 50.0);
-  LOG(INFO) << "\nS2::Origin() coordinates: " << S2LatLng(S2::Origin())
-            << ", distance from pole: " << distance_km << " km";
-
-  // Check that S2::Origin() is not collinear with the edges of any large
-  // S2Cell.  We do this is two parts.  For S2Cells that belong to either
-  // polar face, we simply need to check that S2::Origin() is not nearly
-  // collinear with any edge of any cell that contains it (except for small
-  // cells < 3 meters across).
-  EXPECT_GE(GetMinExpensiveLevel(S2::Origin()), 22);
-
-  // For S2Cells that belong to the four non-polar faces, only longitudinal
-  // edges can possibly be colinear with S2::Origin().  We check these edges
-  // by projecting S2::Origin() onto the equator, and then testing all S2Cells
-  // that contain this point to make sure that none of their edges are nearly
-  // colinear with S2::Origin() (except for small cells < 3 meters across).
-  S2Point equator_point(S2::Origin().x(), S2::Origin().y(), 0);
-  EXPECT_GE(GetMinExpensiveLevel(equator_point), 22);
+  ASSERT_EQ((size_t)1, map.size());
 }

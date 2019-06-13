@@ -1,24 +1,7 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s1interval.h"
-
-#include <float.h>
-
-#include "gtest/gtest.h"
+#include "testing/base/public/gunit.h"
 
 class S1IntervalTestBase : public testing::Test {
  public:
@@ -74,9 +57,8 @@ TEST_F(S1IntervalTestBase, ConstructorsAndAccessors) {
   // Spot-check the constructors and accessors.
   EXPECT_EQ(quad12.lo(), 0);
   EXPECT_EQ(quad12.hi(), M_PI);
-  EXPECT_EQ(quad34[0], M_PI);
-  EXPECT_EQ(quad34[1], 0);
-  EXPECT_EQ(quad34.bounds(), Vector2_d(M_PI, 0));
+  EXPECT_EQ(quad34.bound(0), M_PI);
+  EXPECT_EQ(quad34.bound(1), 0);
   EXPECT_EQ(pi.lo(), M_PI);
   EXPECT_EQ(pi.hi(), M_PI);
 
@@ -92,6 +74,11 @@ TEST_F(S1IntervalTestBase, ConstructorsAndAccessors) {
   EXPECT_TRUE(default_empty.is_empty());
   EXPECT_EQ(empty.lo(), default_empty.lo());
   EXPECT_EQ(empty.hi(), default_empty.hi());
+
+  // Check that intervals can be modified.
+  S1Interval r(0, 0);
+  r.set_hi(M_PI_2);
+  EXPECT_EQ(r.hi(), M_PI_2);
 }
 
 TEST_F(S1IntervalTestBase, SimplePredicates) {
@@ -337,23 +324,6 @@ TEST_F(S1IntervalTestBase, AddPoint) {
   EXPECT_TRUE(r.is_full());
 }
 
-TEST_F(S1IntervalTestBase, ClampPoint) {
-  S1Interval r(-M_PI, -M_PI);
-  EXPECT_EQ(M_PI, r.ClampPoint(-M_PI));
-  EXPECT_EQ(M_PI, r.ClampPoint(0));
-  r = S1Interval(0, M_PI);
-  EXPECT_EQ(0.1, r.ClampPoint(0.1));
-  EXPECT_EQ(0, r.ClampPoint(-M_PI_2 + 1e-15));
-  EXPECT_EQ(M_PI, r.ClampPoint(-M_PI_2 - 1e-15));
-  r = S1Interval(M_PI - 0.1, -M_PI + 0.1);
-  EXPECT_EQ(M_PI, r.ClampPoint(M_PI));
-  EXPECT_EQ(M_PI - 0.1, r.ClampPoint(1e-15));
-  EXPECT_EQ(-M_PI + 0.1, r.ClampPoint(-1e-15));
-  EXPECT_EQ(0, S1Interval::Full().ClampPoint(0));
-  EXPECT_EQ(M_PI, S1Interval::Full().ClampPoint(M_PI));
-  EXPECT_EQ(M_PI, S1Interval::Full().ClampPoint(-M_PI));
-}
-
 TEST_F(S1IntervalTestBase, FromPointPair) {
   EXPECT_EQ(S1Interval::FromPointPair(-M_PI, M_PI), pi);
   EXPECT_EQ(S1Interval::FromPointPair(M_PI, -M_PI), pi);
@@ -370,72 +340,19 @@ TEST_F(S1IntervalTestBase, Expanded) {
   EXPECT_EQ(pi.Expanded(M_PI_2), quad23);
   EXPECT_EQ(pi2.Expanded(M_PI_2), quad12);
   EXPECT_EQ(mipi2.Expanded(M_PI_2), quad34);
-
-  EXPECT_EQ(empty.Expanded(-1), empty);
-  EXPECT_EQ(full.Expanded(-1), full);
-  EXPECT_EQ(quad123.Expanded(-27), empty);
-  EXPECT_EQ(quad234.Expanded(-27), empty);
-  EXPECT_EQ(quad123.Expanded(-M_PI_2), quad2);
-  EXPECT_EQ(quad341.Expanded(-M_PI_2), quad4);
-  EXPECT_EQ(quad412.Expanded(-M_PI_2), quad1);
 }
 
 TEST_F(S1IntervalTestBase, ApproxEquals) {
-  // Choose two values kLo and kHi such that it's okay to shift an endpoint by
-  // kLo (i.e., the resulting interval is equivalent) but not by kHi.
-  static const double kLo = 4 * DBL_EPSILON;  // < max_error default
-  static const double kHi = 6 * DBL_EPSILON;  // > max_error default
-
-  // Empty intervals.
   EXPECT_TRUE(empty.ApproxEquals(empty));
   EXPECT_TRUE(zero.ApproxEquals(empty) && empty.ApproxEquals(zero));
   EXPECT_TRUE(pi.ApproxEquals(empty) && empty.ApproxEquals(pi));
   EXPECT_TRUE(mipi.ApproxEquals(empty) && empty.ApproxEquals(mipi));
-  EXPECT_FALSE(empty.ApproxEquals(full));
-  EXPECT_TRUE(empty.ApproxEquals(S1Interval(1, 1 + 2*kLo)));
-  EXPECT_FALSE(empty.ApproxEquals(S1Interval(1, 1 + 2*kHi)));
-  EXPECT_TRUE(S1Interval(M_PI - kLo, -M_PI + kLo).ApproxEquals(empty));
-
-  // Full intervals.
-  EXPECT_TRUE(full.ApproxEquals(full));
-  EXPECT_FALSE(full.ApproxEquals(empty));
-  EXPECT_FALSE(full.ApproxEquals(zero));
-  EXPECT_FALSE(full.ApproxEquals(pi));
-  EXPECT_TRUE(full.ApproxEquals(S1Interval(kLo, -kLo)));
-  EXPECT_FALSE(full.ApproxEquals(S1Interval(2*kHi, 0)));
-  EXPECT_TRUE(S1Interval(-M_PI + kLo, M_PI - kLo).ApproxEquals(full));
-  EXPECT_FALSE(S1Interval(-M_PI, M_PI - 2*kHi).ApproxEquals(full));
-
-  // Singleton intervals.
-  EXPECT_TRUE(pi.ApproxEquals(pi) && mipi.ApproxEquals(pi));
-  EXPECT_TRUE(pi.ApproxEquals(S1Interval(M_PI - kLo, M_PI - kLo)));
-  EXPECT_FALSE(pi.ApproxEquals(S1Interval(M_PI - kHi, M_PI - kHi)));
-  EXPECT_TRUE(pi.ApproxEquals(S1Interval(M_PI - kLo, -M_PI + kLo)));
-  EXPECT_FALSE(pi.ApproxEquals(S1Interval(M_PI - kHi, -M_PI)));
-  EXPECT_FALSE(zero.ApproxEquals(pi));
+  EXPECT_TRUE(pi.ApproxEquals(mipi) && mipi.ApproxEquals(pi));
+  EXPECT_TRUE(pi.Union(mipi).ApproxEquals(pi));
+  EXPECT_TRUE(mipi.Union(pi).ApproxEquals(pi));
   EXPECT_TRUE(pi.Union(mid12).Union(zero).ApproxEquals(quad12));
   EXPECT_TRUE(quad2.Intersection(quad3).ApproxEquals(pi));
   EXPECT_TRUE(quad3.Intersection(quad2).ApproxEquals(pi));
-
-  // Intervals whose corresponding endpoints are nearly the same but where the
-  // endpoints are in opposite order (i.e., inverted intervals).
-  EXPECT_FALSE(S1Interval(0, kLo).ApproxEquals(S1Interval(kLo, 0)));
-  EXPECT_FALSE(S1Interval(M_PI - 0.5 * kLo, -M_PI + 0.5 * kLo).
-               ApproxEquals(S1Interval(-M_PI + 0.5 * kLo, M_PI - 0.5 * kLo)));
-
-  // Other intervals.
-  EXPECT_TRUE(S1Interval(1 - kLo, 2 + kLo).ApproxEquals(S1Interval(1, 2)));
-  EXPECT_TRUE(S1Interval(1 + kLo, 2 - kLo).ApproxEquals(S1Interval(1, 2)));
-  EXPECT_TRUE(S1Interval(2 - kLo, 1 + kLo).ApproxEquals(S1Interval(2, 1)));
-  EXPECT_TRUE(S1Interval(2 + kLo, 1 - kLo).ApproxEquals(S1Interval(2, 1)));
-  EXPECT_FALSE(S1Interval(1 - kHi, 2 + kLo).ApproxEquals(S1Interval(1, 2)));
-  EXPECT_FALSE(S1Interval(1 + kHi, 2 - kLo).ApproxEquals(S1Interval(1, 2)));
-  EXPECT_FALSE(S1Interval(2 - kHi, 1 + kLo).ApproxEquals(S1Interval(2, 1)));
-  EXPECT_FALSE(S1Interval(2 + kHi, 1 - kLo).ApproxEquals(S1Interval(2, 1)));
-  EXPECT_FALSE(S1Interval(1 - kLo, 2 + kHi).ApproxEquals(S1Interval(1, 2)));
-  EXPECT_FALSE(S1Interval(1 + kLo, 2 - kHi).ApproxEquals(S1Interval(1, 2)));
-  EXPECT_FALSE(S1Interval(2 - kLo, 1 + kHi).ApproxEquals(S1Interval(2, 1)));
-  EXPECT_FALSE(S1Interval(2 + kLo, 1 - kHi).ApproxEquals(S1Interval(2, 1)));
 }
 
 TEST_F(S1IntervalTestBase, GetDirectedHausdorffDistance) {

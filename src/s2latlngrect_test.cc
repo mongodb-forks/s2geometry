@@ -1,35 +1,16 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
-//
 // Most of the S2LatLngRect methods have trivial implementations that
 // use the R1Interval and S1Interval classes, so most of the testing
 // is done in those unit tests.
 
 #include "s2latlngrect.h"
-
-#include <algorithm>
-
-#include "gtest/gtest.h"
 #include "util/coding/coder.h"
+#include "s2edgeutil.h"
 #include "s2cap.h"
 #include "s2cell.h"
-#include "s2edgeutil.h"
 #include "s2testing.h"
-
-using std::min;
+#include "testing/base/public/gunit.h"
 
 static S2LatLngRect RectFromDegrees(double lat_lo, double lng_lo,
                                     double lat_hi, double lng_hi) {
@@ -69,31 +50,6 @@ TEST(S2LatLngRect, Accessors) {
   EXPECT_DOUBLE_EQ(d1.lng_hi().degrees(), 180);
   EXPECT_EQ(d1.lat(), R1Interval(-M_PI_2, -M_PI_4));
   EXPECT_EQ(d1.lng(), S1Interval(0, M_PI));
-}
-
-TEST(S2LatLngRect, ApproxEquals) {
-  // S1Interval and R1Interval have additional testing.
-
-  EXPECT_TRUE(S2LatLngRect::Empty().ApproxEquals(RectFromDegrees(1, 5, 1, 5)));
-  EXPECT_TRUE(RectFromDegrees(1, 5, 1, 5).ApproxEquals(S2LatLngRect::Empty()));
-  EXPECT_FALSE(RectFromDegrees(1, 5, 1, 5).
-               ApproxEquals(RectFromDegrees(2, 7, 2, 7)));
-
-  // Test the max_error (double) parameter.
-  EXPECT_TRUE(RectFromDegrees(10, 10, 20, 20).
-              ApproxEquals(RectFromDegrees(11, 11, 19, 19),
-                           S1Angle::Degrees(1.001).radians()));
-  EXPECT_FALSE(RectFromDegrees(10, 10, 20, 20).
-               ApproxEquals(RectFromDegrees(11, 11, 19, 19),
-                            S1Angle::Degrees(0.999).radians()));
-
-  // Test the max_error (S2LatLng) parameter.
-  EXPECT_TRUE(RectFromDegrees(0, 10, 20, 30).
-              ApproxEquals(RectFromDegrees(-1, 8, 21, 32),
-                           S2LatLng::FromDegrees(1.001, 2.001)));
-  EXPECT_FALSE(RectFromDegrees(0, 10, 20, 30).
-               ApproxEquals(RectFromDegrees(-1, 8, 21, 32),
-                            S2LatLng::FromDegrees(0.999, 1.999)));
 }
 
 TEST(S2LatLngRect, FromCenterSize) {
@@ -143,8 +99,7 @@ TEST(S2LatLngRect, GetVertex) {
     double lat = M_PI_4 * (i - 2);
     double lng = M_PI_2 * (i - 2) + 0.2;
     S2LatLngRect r(R1Interval(lat, lat + M_PI_4),
-                   S1Interval(remainder(lng, 2*M_PI),
-                              remainder(lng + M_PI_2, 2*M_PI)));
+                   S1Interval(remainder(lng, 2*M_PI), remainder(lng + M_PI_2, 2*M_PI)));
     for (int k = 0; k < 4; ++k) {
       EXPECT_TRUE(S2::SimpleCCW(r.GetVertex((k - 1) & 3).ToPoint(),
                                 r.GetVertex(k).ToPoint(),
@@ -273,17 +228,6 @@ TEST(S2LatLngRect, Expanded) {
               ApproxEquals(RectFromDegrees(-90, -180, 40, 180)));
 }
 
-TEST(S2LatLngRect, PolarClosure) {
-  EXPECT_EQ(RectFromDegrees(-89, 0, 89, 1),
-            RectFromDegrees(-89, 0, 89, 1).PolarClosure());
-  EXPECT_EQ(RectFromDegrees(-90, -180, -45, 180),
-            RectFromDegrees(-90, -30, -45, 100).PolarClosure());
-  EXPECT_EQ(RectFromDegrees(89, -180, 90, 180),
-            RectFromDegrees(89, 145, 90, 146).PolarClosure());
-  EXPECT_EQ(S2LatLngRect::Full(),
-            RectFromDegrees(-90, -145, 90, -144).PolarClosure());
-}
-
 TEST(S2LatLngRect, ConvolveWithCap) {
   EXPECT_TRUE(RectFromDegrees(0, 170, 0, -170).
               ConvolveWithCap(S1Angle::Degrees(15)).ApproxEquals(
@@ -296,15 +240,17 @@ TEST(S2LatLngRect, ConvolveWithCap) {
 TEST(S2LatLngRect, GetCapBound) {
   // Bounding cap at center is smaller:
   EXPECT_TRUE(RectFromDegrees(-45, -45, 45, 45).GetCapBound().
-              ApproxEquals(S2Cap::FromCenterHeight(S2Point(1, 0, 0), 0.5)));
+              ApproxEquals(S2Cap::FromAxisHeight(S2Point(1, 0, 0), 0.5)));
 
   // Bounding cap at north pole is smaller:
   EXPECT_TRUE(RectFromDegrees(88, -80, 89, 80).GetCapBound().
-              ApproxEquals(S2Cap(S2Point(0, 0, 1), S1Angle::Degrees(2))));
+              ApproxEquals(S2Cap::FromAxisAngle(S2Point(0, 0, 1),
+                                                S1Angle::Degrees(2))));
 
   // Longitude span > 180 degrees:
   EXPECT_TRUE(RectFromDegrees(-30, -150, -10, 50).GetCapBound().
-              ApproxEquals(S2Cap(S2Point(0, 0, -1), S1Angle::Degrees(80))));
+              ApproxEquals(S2Cap::FromAxisAngle(S2Point(0, 0, -1),
+                                                S1Angle::Degrees(80))));
 }
 
 static void TestCellOps(S2LatLngRect const& r, S2Cell const& cell,
@@ -347,12 +293,15 @@ TEST(S2LatLngRect, CellOps) {
   TestCellOps(r5, S2Cell::FromFacePosLevel(1, 0, 1), 0);
 
   // Rectangle consisting of a single point.
-  TestCellOps(RectFromDegrees(4, 4, 4, 4), S2Cell::FromFace(0), 3);
+  TestCellOps(RectFromDegrees(4, 4, 4, 4),
+              S2Cell::FromFacePosLevel(0, 0, 0), 3);
 
   // Rectangles that intersect the bounding rectangle of a face
   // but not the face itself.
-  TestCellOps(RectFromDegrees(41, -87, 42, -79), S2Cell::FromFace(2), 1);
-  TestCellOps(RectFromDegrees(-41, 160, -40, -160), S2Cell::FromFace(5), 1);
+  TestCellOps(RectFromDegrees(41, -87, 42, -79),
+              S2Cell::FromFacePosLevel(2, 0, 0), 1);
+  TestCellOps(RectFromDegrees(-41, 160, -40, -160),
+              S2Cell::FromFacePosLevel(5, 0, 0), 1);
 
   // This is the leaf cell at the top right hand corner of face 0.
   // It has two angles of 60 degrees and two of 120 degrees.
@@ -368,7 +317,8 @@ TEST(S2LatLngRect, CellOps) {
   // Rectangles that intersect a face but where no vertex of one region
   // is contained by the other region.  The first one passes through
   // a corner of one of the face cells.
-  TestCellOps(RectFromDegrees(-37, -70, -36, -20), S2Cell::FromFace(5), 2);
+  TestCellOps(RectFromDegrees(-37, -70, -36, -20),
+              S2Cell::FromFacePosLevel(5, 0, 0), 2);
 
   // These two intersect like a diamond and a square.
   S2Cell cell202 = S2Cell::FromFacePosLevel(2, 0, 2);
@@ -393,70 +343,7 @@ TEST(S2LatLngRect, EncodeDecode) {
 TEST(S2LatLngRect, Area) {
   EXPECT_EQ(S2LatLngRect::Empty().Area(), 0.0);
   EXPECT_DOUBLE_EQ(S2LatLngRect::Full().Area(), 4 * M_PI);
-  EXPECT_DOUBLE_EQ(RectFromDegrees(0, 0, 90, 90).Area(), M_PI_2);
-}
-
-// Recursively verify that when a rectangle is split into two pieces, the
-// centroids of the children sum to give the centroid of the parent.
-static void TestCentroidSplitting(S2LatLngRect const& r, int splits_left) {
-  S2LatLngRect child0, child1;
-  if (S2Testing::rnd.OneIn(2)) {
-    double lat = S2Testing::rnd.UniformDouble(r.lat().lo(), r.lat().hi());
-    child0 = S2LatLngRect(R1Interval(r.lat().lo(), lat), r.lng());
-    child1 = S2LatLngRect(R1Interval(lat, r.lat().hi()), r.lng());
-  } else {
-    DCHECK_LE(r.lng().lo(), r.lng().hi());
-    double lng = S2Testing::rnd.UniformDouble(r.lng().lo(), r.lng().hi());
-    child0 = S2LatLngRect(r.lat(), S1Interval(r.lng().lo(), lng));
-    child1 = S2LatLngRect(r.lat(), S1Interval(lng, r.lng().hi()));
-  }
-  EXPECT_LE(
-      (r.GetCentroid() - child0.GetCentroid() - child1.GetCentroid()).Norm(),
-      1e-15);
-  if (splits_left > 0) {
-    TestCentroidSplitting(child0, splits_left - 1);
-    TestCentroidSplitting(child1, splits_left - 1);
-  }
-}
-
-TEST(S2LatLngRect, GetCentroid) {
-  S2Testing::Random* rnd = &S2Testing::rnd;
-
-  // Empty and full rectangles.
-  EXPECT_EQ(S2Point(), S2LatLngRect::Empty().GetCentroid());
-  EXPECT_LE(S2LatLngRect::Full().GetCentroid().Norm(), 1e-15);
-
-  // Rectangles that cover the full longitude range.
-  for (int i = 0; i < 100; ++i) {
-    double lat1 = rnd->UniformDouble(-M_PI_2, M_PI_2);
-    double lat2 = rnd->UniformDouble(-M_PI_2, M_PI_2);
-    S2LatLngRect r(R1Interval::FromPointPair(lat1, lat2), S1Interval::Full());
-    S2Point centroid = r.GetCentroid();
-    EXPECT_NEAR(0.5 * (sin(lat1) + sin(lat2)) * r.Area(), centroid.z(), 1e-15);
-    EXPECT_LE(Vector2_d(centroid.x(), centroid.y()).Norm(), 1e-15);
-  }
-
-  // Rectangles that cover the full latitude range.
-  for (int i = 0; i < 100; ++i) {
-    double lng1 = rnd->UniformDouble(-M_PI, M_PI);
-    double lng2 = rnd->UniformDouble(-M_PI, M_PI);
-    S2LatLngRect r(S2LatLngRect::FullLat(),
-                   S1Interval::FromPointPair(lng1, lng2));
-    S2Point centroid = r.GetCentroid();
-    EXPECT_LE(fabs(centroid.z()), 1e-15);
-    EXPECT_NEAR(r.lng().GetCenter(), S2LatLng(centroid).lng().radians(), 1e-15);
-    double alpha = 0.5 * r.lng().GetLength();
-    EXPECT_NEAR(0.25 * M_PI * sin(alpha) / alpha * r.Area(),
-                Vector2_d(centroid.x(), centroid.y()).Norm(), 1e-15);
-  }
-
-  // Finally, verify that when a rectangle is recursively split into pieces,
-  // the centroids of the pieces add to give the centroid of their parent.
-  // To make the code simpler we avoid rectangles that cross the 180 degree
-  // line of longitude.
-  TestCentroidSplitting(
-      S2LatLngRect(S2LatLngRect::FullLat(), S1Interval(-3.14, 3.14)),
-      10 /*splits_left*/);
+  EXPECT_DOUBLE_EQ(RectFromDegrees(0, 0, 90, 90).Area(), M_PI / 2);
 }
 
 // Returns the minimum distance from X to the latitude line segment defined by
@@ -712,8 +599,7 @@ static void VerifyGetDirectedHausdorffDistance(const S2LatLngRect& a,
 
 TEST(S2LatLngRect, GetDirectedHausdorffDistanceRandomPairs) {
   // Test random pairs.
-  const int kIters = 1000;
-  for (int i = 0; i < kIters; ++i) {
+  for (int i = 0; i < 5000; ++i) {
     S2LatLngRect a =
         S2LatLngRect::FromPointPair(S2LatLng(S2Testing::RandomPoint()),
                                     S2LatLng(S2Testing::RandomPoint()));
@@ -726,12 +612,17 @@ TEST(S2LatLngRect, GetDirectedHausdorffDistanceRandomPairs) {
     S2LatLngRect a2(a.lat(), a.lng().Complement());
     S2LatLngRect b2(b.lat(), b.lng().Complement());
 
-    // Note that "a" and "b" come from the same distribution, so there is no
-    // need to test pairs such as (b, a), (b, a2), etc.
     VerifyGetDirectedHausdorffDistance(a, b);
+    VerifyGetDirectedHausdorffDistance(b, a);
+
     VerifyGetDirectedHausdorffDistance(a, b2);
+    VerifyGetDirectedHausdorffDistance(b2, a);
+
     VerifyGetDirectedHausdorffDistance(a2, b);
+    VerifyGetDirectedHausdorffDistance(b, a2);
+
     VerifyGetDirectedHausdorffDistance(a2, b2);
+    VerifyGetDirectedHausdorffDistance(b2, a2);
   }
 }
 

@@ -1,19 +1,5 @@
 // Copyright 2009 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
-//
 // ExactFloat is a multiple-precision floating point type based on the OpenSSL
 // Bignum library.  It has the same interface as the built-in "float" and
 // "double" types, but only supports the subset of operators and intrinsics
@@ -27,7 +13,7 @@
 // ExactFloat is a subset of the faster and more capable MPFloat class (which
 // is based on the GNU MPFR library).  The main reason to use this class
 // rather than MPFloat is that it is subject to a BSD-style license rather
-// than the much more restrictive LGPL license.
+// than the much restrictive LGPL license.
 //
 // It has the following features:
 //
@@ -76,7 +62,7 @@
 // -----------------------------------
 //
 // ExactFloat can be used with templatized classes such as Vector2 and Vector3
-// (see "util/math/vector3.h"), with the following limitations:
+// (see "util/math/vector3-inl.h"), with the following limitations:
 //
 //  - Cast() can be used to convert other vector types to an ExactFloat vector
 //    type, but not the other way around.  This is because there are no
@@ -108,16 +94,19 @@
 #ifndef UTIL_MATH_EXACTFLOAT_EXACTFLOAT_H_
 #define UTIL_MATH_EXACTFLOAT_EXACTFLOAT_H_
 
-#include <limits.h>
 #include <math.h>
+#include <limits.h>
 #include <iostream>
-#include <string>
-#include <algorithm>
+using std::ostream;
+using std::cout;
+using std::endl;
 
+#include <string>
+using std::string;
+
+#include "base/logging.h"
 #include "base/integral_types.h"
-#include <glog/logging.h>
-#include "base/port.h"
-#include <openssl/bn.h>
+#include "openssl/bn.h"
 
 class ExactFloat {
  public:
@@ -313,7 +302,7 @@ class ExactFloat {
   static int NumSignificantDigitsForPrec(int prec);
 
   // Output the ExactFloat in human-readable format, e.g. for logging.
-  friend std::ostream& operator<<(std::ostream& o, ExactFloat const& f) {
+  friend ostream& operator<<(ostream& o, ExactFloat const& f) {
     return o << f.ToString();
   }
 
@@ -376,7 +365,6 @@ class ExactFloat {
 
   // Absolute value.
   friend ExactFloat fabs(const ExactFloat& a);
-  friend ExactFloat abs(const ExactFloat& a);
 
   // Maximum of two values.
   friend ExactFloat fmax(const ExactFloat& a, const ExactFloat& b);
@@ -448,7 +436,7 @@ class ExactFloat {
   }
 
   // A synonym for remainder().
-  friend ExactFloat drem(const ExactFloat& a, const ExactFloat& b) {
+  friend ExactFloat remainder(const ExactFloat& a, const ExactFloat& b) {
     return remainder(a, b);
   }
 
@@ -482,7 +470,9 @@ class ExactFloat {
   }
 
   // A version of ldexp() where "exp" is a long integer.
-  friend ExactFloat scalbln(const ExactFloat& a, long exp);
+  friend ExactFloat scalbln(const ExactFloat& a, long exp) {
+    return ldexp(a, exp);
+  }
 
   // Convert "a" to a normalized fraction in the range [1,2) times a power of
   // two, and return the exponent value as an integer.  This is equivalent to

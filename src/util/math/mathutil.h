@@ -1,17 +1,4 @@
-// Copyright 2001 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+// Copyright 2001 and onwards Google Inc.
 //
 // This class is intended to contain a collection of useful (static)
 // mathematical functions, properly coded (by consulting numerical
@@ -20,19 +7,18 @@
 #ifndef UTIL_MATH_MATHUTIL_H__
 #define UTIL_MATH_MATHUTIL_H__
 
-// TODO(user): take this out -- watch out for isinf errors.
-#include <math.h>  // Needed for old-fashioned ::isinf calls.
-
+#include <math.h>
 #include <algorithm>
-#include <cmath>
-#include <limits>
-#include <vector>
+using std::min;
+using std::max;
+using std::swap;
+using std::reverse;
 
-#include "base/casts.h"
-#include "base/integral_types.h"
-#include <glog/logging.h>
-#include "base/macros.h"
-#include "util/math/mathlimits.h"
+#include <vector>
+using std::vector;
+
+#include "base/basictypes.h"
+#include "base/logging.h"
 
 // Returns the sign of x:
 //   -1 if x < 0,
@@ -44,11 +30,90 @@ template <class T>
 inline T sgn(const T x) {
   return (x == 0 ? 0 : (x < 0 ? -1 : 1));
 }
+// HACK ALERT
+// So here's the deal: There's a ton of junk defined in mathlimits.h that should be moved into
+// mathlimits.cc.  But the only thing that uses mathlimits.cc/h is this, mathutil.cc/h.
+// So I moved a class definition into this .h file before the stuff that references it and stuck
+// mathutil.cc into mathlimits.cc.  Voila!
+#ifndef UTIL_MATH_MATHLIMITS_H__
+#define UTIL_MATH_MATHLIMITS_H__
+// Useful integer and floating point limits and type traits.
+// This is just for the documentation;
+// real members are defined in our specializations below.
+template<typename T> struct MathLimits {
+  // Type name.
+  typedef T Type;
+  // Unsigned version of the Type with the same byte size.
+  // Same as Type for floating point and unsigned types.
+  typedef T UnsignedType;
+  // If the type supports negative values.
+  static const bool kIsSigned;
+  // If the type supports only integer values.
+  static const bool kIsInteger;
+  // Magnitude-wise smallest representable positive value.
+  static const Type kPosMin;
+  // Magnitude-wise largest representable positive value.
+  static const Type kPosMax;
+  // Smallest representable value.
+  static const Type kMin;
+  // Largest representable value.
+  static const Type kMax;
+  // Magnitude-wise smallest representable negative value.
+  // Present only if kIsSigned.
+  static const Type kNegMin;
+  // Magnitude-wise largest representable negative value.
+  // Present only if kIsSigned.
+  static const Type kNegMax;
+  // Smallest integer x such that 10^x is representable.
+  static const int kMin10Exp;
+  // Largest integer x such that 10^x is representable.
+  static const int kMax10Exp;
+  // Smallest positive value such that Type(1) + kEpsilon != Type(1)
+  static const Type kEpsilon;
+  // Typical rounding error that is enough to cover
+  // a few simple floating-point operations.
+  // Slightly larger than kEpsilon to account for a few rounding errors.
+  // Is zero if kIsInteger.
+  static const Type kStdError;
+  // Number of decimal digits of mantissa precision.
+  // Present only if !kIsInteger.
+  static const int kPrecisionDigits;
+  // Not a number, i.e. result of 0/0.
+  // Present only if !kIsInteger.
+  static const Type kNaN;
+  // Positive infinity, i.e. result of 1/0.
+  // Present only if !kIsInteger.
+  static const Type kPosInf;
+  // Negative infinity, i.e. result of -1/0.
+  // Present only if !kIsInteger.
+  static const Type kNegInf;
 
+  // NOTE: Special floating point values behave
+  // in a special (but mathematically-logical) way
+  // in terms of (in)equalty comparison and mathematical operations
+  // -- see out unittest for examples.
+
+  // Special floating point value testers.
+  // Present in integer types for convenience.
+  static bool IsFinite(const Type x);
+  static bool IsNaN(const Type x);
+  static bool IsInf(const Type x);
+  static bool IsPosInf(const Type x);
+  static bool IsNegInf(const Type x);
+};
+// END HACK ALERT
+#endif  //UTIL_MATH_MATHLIMITS_H
 // ========================================================================= //
+
+// Disable error about fabs causing truncation of value because
+// it takes a double instead of a long double (Clang 3.5)
+// See SERVER-15183
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wabsolute-value"
 
 class MathUtil {
  public:
+
   // Return type of RealRootsForQuadratic (below).  The enum values are
   // chosen to be sensible if converted to bool or int, and should not be
   // changed lightly.
@@ -65,38 +130,11 @@ class MathUtil {
   //
   // A special case occurs when a==0; see DegenerateQuadraticRoots().
   // See also QuadraticIsAmbiguous() and RealQuadraticRoots().
-  static inline QuadraticRootType RealRootsForQuadratic(long double a,
+  static QuadraticRootType RealRootsForQuadratic(long double a,
                                                         long double b,
                                                         long double c,
                                                         long double *r1,
-                                                        long double *r2) {
-    // Deal with degenerate cases where leading coefficients vanish.
-    if (a == 0.0) {
-      return DegenerateQuadraticRoots(b, c, r1, r2);
-    }
-
-    // General case: the quadratic formula, rearranged for greater numerical
-    // stability.
-
-    // If the discriminant is zero to numerical precision, regardless of
-    // sign, treat it as zero and return kAmbiguous.  We use the double
-    // rather than long double value for epsilon because in practice inputs
-    // are generally calculated in double precision.
-    const long double discriminant = QuadraticDiscriminant(a, b, c);
-    if (QuadraticIsAmbiguous(a, b, c, discriminant,
-                             MathLimits<double>::kEpsilon)) {
-      *r2 = *r1 = -b / 2 / a;  // The quadratic is (2*a*x + b)^2 = 0.
-      return kAmbiguous;
-    }
-
-    if (discriminant < 0) {
-      // The discriminant is definitely negative so there are no real roots.
-      return kNoRealRoots;
-    }
-
-    RealQuadraticRoots(a, b, c, discriminant, r1, r2);
-    return kTwoRealRoots;
-  }
+                                                        long double *r2);
 
   // Returns the discriminant of the quadratic equation a * x^2 + b * x + c = 0.
   static inline long double QuadraticDiscriminant(long double a,
@@ -118,9 +156,8 @@ class MathUtil {
     // Discriminants below kTolerance in absolute value are considered zero
     // because changing the final bit of one of the inputs can change the
     // sign of the discriminant.
-    const long double kTolerance =
-        epsilon * std::max(2 * b * b, fabsl(4 * a * c));
-    return (std::abs(discriminant) <= kTolerance);
+    const double kTolerance = epsilon * max(fabs(2 * b * b), fabs(4 * a * c));
+    return (fabs(discriminant) <= kTolerance);
   }
 
   // Returns in *r1 and *r2 the roots of a "normal" quadratic equation
@@ -134,7 +171,7 @@ class MathUtil {
                                         long double *r2) {
     if (discriminant <= 0 || a == 0) {
       // A case that should have been excluded by the caller.
-      DLOG(FATAL);
+      DCHECK(false);
       return false;
     }
 
@@ -151,7 +188,7 @@ class MathUtil {
     // the following rearrangement.  (Note we don't use sgn(b) because we
     // need sgn(0) = +1 or -1.)
     long double const q = -0.5 *
-        (b + ((b >= 0) ? std::sqrt(discriminant) : -std::sqrt(discriminant)));
+        (b + ((b >= 0) ? sqrt(discriminant) : -sqrt(discriminant)));
     *r1 = q / a;  // If a is very small this produces +/- HUGE_VAL.
     *r2 = c / q;  // q cannot be too small.
     return true;
@@ -180,13 +217,6 @@ class MathUtil {
                                 long double *r2,
                                 long double *r3);
 
-  // Solves for the real roots of the quartic equation, x^4+ax^3+bx^2+cx+d=0,
-  // returns the number of real roots found.
-  static int RealRootsForQuartic(long double a,
-                                 long double b,
-                                 long double c,
-                                 long double d,
-                                 long double *roots);
 
   // ----------------------------------------------------------------------
   // Sigmoid
@@ -195,7 +225,7 @@ class MathUtil {
   //   f(x) = 1/(1+e^(-lambda x))
   // --------------------------------------------------------------------
   static double Sigmoid(double x, double lambda) {
-    return 1 / (1 + std::exp(-lambda*x));
+    return 1/(1+exp(-lambda*x));
   }
 
   // ----------------------------------------------------------------------
@@ -204,7 +234,7 @@ class MathUtil {
   //   Note that all inputs must be in (-1, 1)
   // ----------------------------------------------------------------------
   static double InverseSigmoid(double const x, double const lambda) {
-    return -std::log((1.0 / x - 1)) / lambda;
+    return -log((1.0 / x - 1)) / lambda;
   }
 
   // ----------------------------------------------------------------------
@@ -225,55 +255,11 @@ class MathUtil {
     DCHECK_GT(tolerance, 0);
     DCHECK_LT(tolerance, 1);
     DCHECK_NE(finish_x - start_x, 0);
-    double lambda =
-        std::log((1 - tolerance) / tolerance) * 2 / (finish_x - start_x);
+    double lambda = log((1-tolerance)/tolerance)*2/(finish_x - start_x);
     return Sigmoid(x - 0.5 * (start_x + finish_x), lambda);
   }
 
-  // ----------------------------------------------------------------------
-  // CeilOfRatio<IntegralType>
-  // FloorOfRatio<IntegralType>
-  //   Returns the ceil (resp. floor) of the ratio of two integers.
-  //
-  //  * IntegralType: any integral type, whether signed or not.
-  //  * numerator: any integer: positive, negative, or zero.
-  //  * denominator: a non-zero integer, positive or negative.
-  //
-  // This implementation is correct, meaning there is never any precision loss,
-  // and there is never an overflow. However, if the type is signed, having
-  // numerator == MathLimits<IntegralType>::kMin and denominator == -1 is not a
-  // valid input, because kMin has a greater absolute value that kMax.
-  //
-  // Input validity is DCHECKed. When not in debug mode, invalid inputs raise
-  // SIGFPE.
-  //
-  // This method has been designed and tested so that it should always be
-  // preferred to alternatives. Indeed, there exist popular recipes to compute
-  // the result, such as casting to double, but they are in general incorrect.
-  // In cases where an alternative technique is correct, performance measurement
-  // showed the provided implementation is faster.
-  //
-  // Details of these alternative (dangerous) techniques, examples showing their
-  // incorrectness, and performance comparisons are in the unit tests. Here is
-  // a perflab result comparing the provided implementation with two others:
-  // http://perflab.mtv/120301135354310524030
-  // ----------------------------------------------------------------------
-  template<typename IntegralType>
-  static IntegralType CeilOfRatio(IntegralType numerator,
-                                  IntegralType denominator) {
-    return CeilOrFloorOfRatio<IntegralType, true>(numerator, denominator);
-  }
-  template<typename IntegralType>
-  static IntegralType FloorOfRatio(IntegralType numerator,
-                                   IntegralType denominator) {
-    return CeilOrFloorOfRatio<IntegralType, false>(numerator, denominator);
-  }
-  template<typename IntegralType, bool ceil>
-  static IntegralType CeilOrFloorOfRatio(IntegralType numerator,
-                                         IntegralType denominator);
-
-  // Euclid's Algorithm.
-  // Returns: the greatest common divisor of two unsigned integers x and y
+  // Returns the greatest common divisor of two unsigned integers x and y
   static unsigned int GCD(unsigned int x, unsigned int y) {
     while (y != 0) {
       unsigned int r = x % y;
@@ -282,20 +268,6 @@ class MathUtil {
     }
     return x;
   }
-
-  // Euclid's Algorithm.
-  // Returns: the greatest common divisor of two unsigned integers x and y
-  static int64 GCD64(int64 x, int64 y) {
-    DCHECK_GE(x, 0);
-    DCHECK_GE(y, 0);
-    while (y != 0) {
-      int64 r = x % y;
-      x = y;
-      y = r;
-    }
-    return x;
-  }
-
 
   // Returns the greatest common divisor of two unsigned integers x and y,
   // and assigns a, and b such that a*x + b*y = gcd(x, y).
@@ -341,133 +313,42 @@ class MathUtil {
   // Outputs:
   //   shards_to_read gives the subset of the N input shards to read.
   // --------------------------------------------------------------------
-  static void ShardsToRead(const std::vector<bool>& shards_to_write,
-                           std::vector<bool>* shards_to_read);
+  static void ShardsToRead(const vector<bool>& shards_to_write,
+                           vector<bool>* shards_to_read);
 
   // --------------------------------------------------------------------
-  // Round
-  //   This function rounds a floating-point number to an integer. It
-  //   works for positive or negative numbers.
+  // Round, IntRound
+  //   These functions round a floating-point number to an integer.  They
+  //   work for positive or negative numbers.
   //
   //   Values that are halfway between two integers may be rounded up or
-  //   down, for example Round<int>(0.5) == 0 and Round<int>(1.5) == 2.
-  //   This allows the function to be implemented efficiently on Intel
+  //   down, for example IntRound(0.5) == 0 and IntRound(1.5) == 2.  This
+  //   allows these functions to be implemented efficiently on Intel
   //   processors (see the template specializations at the bottom of this
-  //   file).  You should not use this function if you care about which
+  //   file).  You should not use these functions if you care about which
   //   way such half-integers are rounded.
   //
   //   Example usage:
   //     double y, z;
-  //     int x = Round<int>(y + 3.7);
+  //     int x = IntRound(y + 3.7);
   //     int64 b = Round<int64>(0.3 * z);
   //
   //   Note that the floating-point template parameter is typically inferred
   //   from the argument type, i.e. there is no need to specify it explicitly.
   // --------------------------------------------------------------------
   template <class IntOut, class FloatIn>
-  static IntOut Round(FloatIn x) {
-    COMPILE_ASSERT(!MathLimits<FloatIn>::kIsInteger, FloatIn_is_integer);
-    COMPILE_ASSERT(MathLimits<IntOut>::kIsInteger, IntOut_is_not_integer);
+  static IntOut Round(FloatIn x);
 
-    // We don't use sgn(x) below because there is no need to distinguish the
-    // (x == 0) case.  Also note that there are specialized faster versions
-    // of this function for Intel processors at the bottom of this file.
-    return static_cast<IntOut>(x < 0 ? (x - 0.5) : (x + 0.5));
-  }
-
-  // Convert a floating-point number to an integer. For all inputs x where
-  // static_cast<IntOut>(x) is legal according to the C++ standard, the result
-  // is identical to that cast (i.e. the result is x with its fractional part
-  // truncated whenever that is representable as IntOut).
-  //
-  // static_cast would cause undefined behavior for the following cases, which
-  // have well-defined behavior for this function:
-  //
-  //  1. If x is NaN, the result is zero.
-  //
-  //  2. If the truncated form of x is above the representable range of IntOut,
-  //     the result is MathLimits<IntOut>::kMax.
-  //
-  //  3. If the truncated form of x is below the representable range of IntOut,
-  //     the result is MathLimits<IntOut>::kMin.
-  //
-  // Note that cases #2 and #3 cover infinities as well as finite numbers.
-  //
-  // The range of FloatIn must include the range of IntOut, otherwise
-  // the results are undefined.
-  template <class IntOut, class FloatIn>
-  static IntOut SafeCast(FloatIn x) {
-    COMPILE_ASSERT(!MathLimits<FloatIn>::kIsInteger, FloatIn_is_integer);
-    COMPILE_ASSERT(MathLimits<IntOut>::kIsInteger, IntOut_is_not_integer);
-    COMPILE_ASSERT(std::numeric_limits<IntOut>::radix == 2, IntOut_is_base_2);
-
-    // Special case NaN, for which the logic below doesn't work.
-    if (MathLimits<FloatIn>::IsNaN(x)) {
-      return 0;
-    }
-
-    // Negative values all clip to zero for unsigned results.
-    if (!MathLimits<IntOut>::kIsSigned && x < 0) {
-      return 0;
-    }
-
-    // Handle infinities.
-    if (MathLimits<FloatIn>::IsInf(x)) {
-      return x < 0 ?
-          MathLimits<IntOut>::kMin : MathLimits<IntOut>::kMax;
-    }
-
-    // Set exp such that x == f * 2^exp for some f with |f| in [0.5, 1.0),
-    // unless x is zero in which case exp == 0. Note that this implies that the
-    // magnitude of x is strictly less than 2^exp.
-    int exp = 0;
-    std::frexp(x, &exp);
-
-    // Let N be the number of non-sign bits in the representation of IntOut. If
-    // the magnitude of x is strictly less than 2^N, the truncated version of x
-    // is representable as IntOut. The only representable integer for which this
-    // is not the case is kMin for signed types (i.e. -2^N), but that is covered
-    // by the fall-through below.
-    if (exp <= std::numeric_limits<IntOut>::digits) {
-      return x;
-    }
-
-    // Handle numbers with magnitude >= 2^N.
-    return x < 0 ?
-        MathLimits<IntOut>::kMin : MathLimits<IntOut>::kMax;
-  }
-
-  // --------------------------------------------------------------------
-  // SafeRound
-  //   These functions round a floating-point number to an integer.
-  //   Results are identical to Round, except in cases where
-  //   the argument is NaN, or when the rounded value would overflow the
-  //   return type. In those cases, Round has undefined
-  //   behavior. SafeRound returns 0 when the argument is
-  //   NaN, and returns the closest possible integer value otherwise (i.e.
-  //   MathLimits<IntOut>::kMax for large positive values, and
-  //   MathLimits<IntOut>::kMin for large negative values).
-  //   The range of FloatIn must include the range of IntOut, otherwise
-  //   the results are undefined.
-  // --------------------------------------------------------------------
-  template <class IntOut, class FloatIn>
-  static IntOut SafeRound(FloatIn x) {
-    COMPILE_ASSERT(!MathLimits<FloatIn>::kIsInteger, FloatIn_is_integer);
-    COMPILE_ASSERT(MathLimits<IntOut>::kIsInteger, IntOut_is_not_integer);
-
-    if (MathLimits<FloatIn>::IsNaN(x)) {
-      return 0;
-    } else {
-      return SafeCast<IntOut>((x < 0.) ? (x - 0.5) : (x + 0.5));
-    }
-  }
+  // Example usage: IntRound(3.6) (no need for IntRound<double>(3.6)).
+  template <class FloatIn>
+  static int IntRound(FloatIn x) { return Round<int>(x); }
 
   // --------------------------------------------------------------------
   // FastIntRound, FastInt64Round
   //   Fast routines for converting floating-point numbers to integers.
   //
   //   These routines are approximately 6 times faster than the default
-  //   implementation of Round<int> on Intel processors (12 times faster on
+  //   implementation of IntRound() on Intel processors (12 times faster on
   //   the Pentium 3).  They are also more than 5 times faster than simply
   //   casting a "double" to an "int" using static_cast<int>.  This is
   //   because casts are defined to truncate towards zero, which on Intel
@@ -554,8 +435,8 @@ class MathUtil {
 
   // the sine cardinal function
   static double Sinc(double x) {
-    if (std::fabs(x) < 1E-8) return 1.0;
-    return std::sin(x) / x;
+    if (fabs(x) < 1E-8) return 1.0;
+    return sin(x) / x;
   }
 
   // Returns an approximation An for the n-th element of the harmonic
@@ -639,7 +520,7 @@ class MathUtil {
   // which should be OK: see the comment for Max above.
   template<typename T>
   static T Abs(const T x) {
-    return x > T(0) ? x : -x;
+    return x > 0 ? x : -x;
   }
 
   // The sign of x
@@ -650,8 +531,7 @@ class MathUtil {
   //  nan if x is nan.
   template<typename T>
   static T Sign(const T x) {
-    return MathLimits<T>::IsNaN(x) ? x :
-        (x == T(0) ? T(0) : (x > T(0) ? T(1) : T(-1)));
+    return MathLimits<T>::IsNaN(x) ? x : (x == 0 ? 0 : (x > 0 ? 1 : -1));
   }
 
   // Returns the square of x
@@ -664,9 +544,7 @@ class MathUtil {
   // Works correctly for signed types and special floating point values.
   template<typename T>
   static typename MathLimits<T>::UnsignedType AbsDiff(const T x, const T y) {
-    // Carries out arithmetic as unsigned to avoid overflow.
-    typedef typename MathLimits<T>::UnsignedType R;
-    return x > y ? R(x) - R(y) : R(y) - R(x);
+    return x > y ? x - y : y - x;
   }
 
   // CAVEAT: Floating point computation instability for x86 CPUs
@@ -771,6 +649,7 @@ class MathUtil {
   //
   // standard_error is the corresponding MathLimits<T>::kStdError constant.
   // It is equivalent to 5 bits of mantissa error. See
+  // google3/util/math/mathlimits.cc.
   //
   // Caveat:
   // AlmostEquals() is not appropriate for checking long sequences of
@@ -805,21 +684,6 @@ class MathUtil {
   static void ClampValue(const T& low, const T& high, T* value) {
     *value = Clamp(low, high, *value);
   }
-
-  // Functions for converting between degrees and radians.
-  // Note: no clamping is done on the output.
-  static inline double DegToRad(const double angle_degrees) {
-    // Pi, as defined in <cmath> from GRTE v3.
-    static const double kPi = 3.14159265358979323846;
-    static const double kDeg2Rad = kPi / 180.0;
-    return angle_degrees * kDeg2Rad;
-  }
-
-  static inline double RadToDeg(const double angle_radians) {
-    static const double kPi = 3.14159265358979323846;
-    static const double kRad2Deg = 180.0 / kPi;
-    return angle_radians * kRad2Deg;
-  }
 };
 
 // ========================================================================= //
@@ -829,7 +693,6 @@ class MathUtil {
 // We define template specializations of Round() to get the more efficient
 // Intel versions when possible.  Note that gcc does not currently support
 // partial specialization of templatized functions.
-
 template<>
 inline int32 MathUtil::Round<int32, double>(double x) {
   return FastIntRound(x);
@@ -873,10 +736,8 @@ bool MathUtil::WithinFraction(const T x, const T y, const T fraction) {
 template<typename T>
 bool MathUtil::WithinFractionOrMargin(const T x, const T y,
                                       const T fraction, const T margin) {
-  // Not just "0 <= fraction" to fool the compiler for unsigned types.
-  DCHECK((T(0) < fraction || T(0) == fraction) &&
-         fraction < T(1) &&
-         margin >= T(0));
+  // not just "0 <= fraction" to fool the compiler for unsigned types
+  DCHECK((0 < fraction || 0 == fraction)  &&  fraction < 1  &&  margin >= 0);
 
   // Template specialization will convert the if() condition to a constant,
   // which will cause the compiler to generate code for either the "if" part
@@ -886,61 +747,11 @@ bool MathUtil::WithinFractionOrMargin(const T x, const T y,
     return x == y;
   } else {
     // IsFinite checks are to make kPosInf and kNegInf not within fraction
-    if (!MathLimits<T>::IsFinite(x) && !MathLimits<T>::IsFinite(y)) {
-      return false;
-    }
-    T relative_margin = static_cast<T>(fraction * Max(Abs(x), Abs(y)));
-    return AbsDiff(x, y) <= Max(margin, relative_margin);
+    return (MathLimits<T>::IsFinite(x) || MathLimits<T>::IsFinite(y)) &&
+           (AbsDiff(x, y) <= Max(margin, fraction * Max(Abs(x), Abs(y))));
   }
 }
 
-// ---- CeilOrFloorOfRatio ----
-// This is a branching-free, cast-to-double-free implementation.
-//
-// Casting to double is in general incorrect because of loss of precision
-// when casting an int64 into a double.
-//
-// There's a bunch of 'recipes' to compute a integer ceil (or floor) on the web,
-// and most of them are incorrect.
-template<typename IntegralType, bool ceil>
-IntegralType MathUtil::CeilOrFloorOfRatio(IntegralType numerator,
-                                          IntegralType denominator) {
-  COMPILE_ASSERT(MathLimits<IntegralType>::kIsInteger,
-                 CeilOfRatio_is_only_defined_for_integral_types);
-  DCHECK_NE(0, denominator) << "Division by zero is not supported.";
-  DCHECK(!MathLimits<IntegralType>::kIsSigned ||
-         numerator != MathLimits<IntegralType>::kMin ||
-         denominator != -1)
-      << "Dividing " << numerator << "by -1 is not supported: it would SIGFPE";
-
-  const IntegralType rounded_toward_zero = numerator / denominator;
-  const IntegralType intermediate_product = rounded_toward_zero * denominator;
-
-  if (ceil) {  // Compile-time condition: not an actual branching
-    // When rounded_toward_zero is negative, then an adjustment is never needed:
-    // the real ratio is negative, and so rounded toward zero is the ceil.
-    // When rounded_toward_zero is non-negative, an adjustment is needed if the
-    // sign of the difference numerator - intermediate_product is the same as
-    // the sign of the denominator.
-    //
-    // Using a bool and then a static_cast to IntegralType is not strictly
-    // necessary, but it makes the code clear, and anyway the compiler should
-    // get rid of it.
-    const bool needs_adjustment = (rounded_toward_zero >= 0) &&
-        ((denominator > 0 && numerator > intermediate_product) ||
-            (denominator < 0 && numerator < intermediate_product));
-    const IntegralType adjustment = static_cast<IntegralType>(needs_adjustment);
-    const IntegralType ceil_of_ratio = rounded_toward_zero + adjustment;
-    return ceil_of_ratio;
-  } else {
-    // Floor case: symmetrical to the previous one
-    const bool needs_adjustment = (rounded_toward_zero <= 0) &&
-        ((denominator > 0 && numerator < intermediate_product) ||
-         (denominator < 0 && numerator > intermediate_product));
-    const IntegralType adjustment = static_cast<IntegralType>(needs_adjustment);
-    const IntegralType floor_of_ratio = rounded_toward_zero - adjustment;
-    return floor_of_ratio;
-  }
-}
+#pragma clang diagnostic pop
 
 #endif  // UTIL_MATH_MATHUTIL_H__

@@ -1,57 +1,25 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2LATLNGRECT_H_
 #define UTIL_GEOMETRY_S2LATLNGRECT_H_
 
-#include <math.h>
-#include <iosfwd>
 #include <iostream>
+using std::ostream;
+using std::cout;
+using std::endl;
 
-#include <glog/logging.h>
-#include "r1interval.h"
+
+#include "base/basictypes.h"
+#include "base/logging.h"
 #include "s1angle.h"
+#include "r1interval.h"
 #include "s1interval.h"
-#include "s2.h"
-#include "s2latlng.h"
 #include "s2region.h"
-
-class Decoder;
-class Encoder;
-class S2Cap;
-class S2Cell;
+#include "s2latlng.h"
 
 // An S2LatLngRect represents a closed latitude-longitude rectangle.  It is
-// capable of representing the empty and full rectangles as well as single
-// points.  Note that the latitude-longitude space is considered to have a
-// *cylindrical* topology rather than a spherical one, i.e. the poles have
-// multiple lat/lng representations.  An S2LatLngRect may be defined so that
-// includes some representations of a pole but not others.  Use the
-// PolarClosure() method if you want to expand a rectangle so that it contains
-// all possible representations of any contained poles.
-//
-// Because S2LatLngRect uses S1Interval to store the longitude range,
-// longitudes of -180 degrees are treated specially.  Except for empty
-// and full longitude spans, -180 degree longitudes will turn into +180
-// degrees.  This sign flip causes lng_lo() to be greater than lng_hi(),
-// indicating that the rectangle will wrap around through -180 instead of
-// through +179. Thus the math is consistent within the library, but the sign
-// flip can be surprising, especially when working with map projections where
-// -180 and +180 are at opposite ends of the flattened map.  See the comments
-// on S1Interval for more details.
+// capable of representing the empty and full rectangles as well as
+// single points.
 //
 // This class is intended to be copied by value as desired.  It uses
 // the default copy constructor and assignment operator, however it is
@@ -108,11 +76,8 @@ class S2LatLngRect : public S2Region {
   S2LatLng lo() const { return S2LatLng(lat_lo(), lng_lo()); }
   S2LatLng hi() const { return S2LatLng(lat_hi(), lng_hi()); }
 
-  // The canonical empty and full rectangles, as derived from the Empty
-  // and Full R1 and S1 Intervals.
-  // Empty: lat_lo=1, lat_hi=0, lng_lo=Pi, lng_hi=-Pi (radians)
+  // The canonical empty and full rectangles.
   static inline S2LatLngRect Empty();
-  // Full: lat_lo=-Pi/2, lat_hi=Pi/2, lng_lo=-Pi, lng_hi=Pi (radians)
   static inline S2LatLngRect Full();
 
   // The full allowable range of latitudes and longitudes.
@@ -138,8 +103,7 @@ class S2LatLngRect : public S2Region {
   // the 180 degree longitude line.
   bool is_inverted() const { return lng_.is_inverted(); }
 
-  // Return the k-th vertex of the rectangle (k = 0,1,2,3) in CCW order (lower
-  // left, lower right, upper right, upper left).
+  // Return the k-th vertex of the rectangle (k = 0,1,2,3) in CCW order.
   S2LatLng GetVertex(int k) const;
 
   // Return the center of the rectangle in latitude-longitude space
@@ -152,20 +116,6 @@ class S2LatLngRect : public S2Region {
 
   // Returns the surface area of this rectangle on the unit sphere.
   double Area() const;
-
-  // Return the true centroid of the rectangle multiplied by its surface area
-  // (see s2.h for details on centroids).  The result is not unit length, so
-  // you may want to normalize it.  Note that in general the centroid is
-  // *not* at the center of the rectangle, and in fact it may not even be
-  // contained by the rectangle.  (It is the "center of mass" of the rectangle
-  // viewed as subset of the unit sphere, i.e. it is the point in space about
-  // which this curved shape would rotate.)
-  //
-  // The reason for multiplying the result by the rectangle area is to make it
-  // easier to compute the centroid of more complicated shapes.  The centroid
-  // of a union of disjoint regions can be computed simply by adding their
-  // GetCentroid() results.
-  S2Point GetCentroid() const;
 
   // More efficient version of Contains() that accepts a S2LatLng rather than
   // an S2Point.  The argument must be normalized.
@@ -207,23 +157,15 @@ class S2LatLngRect : public S2Region {
   void AddPoint(S2LatLng const& ll);
 
   // Return a rectangle that contains all points whose latitude distance from
-  // this rectangle is at most margin.lat(), and whose longitude distance from
-  // this rectangle is at most margin.lng().  In particular, latitudes are
-  // clamped while longitudes are wrapped.  Any expansion of an empty rectangle
-  // remains empty.  Both components of "margin" must be non-negative.
+  // this rectangle is at most margin.lat(), and whose longitude distance
+  // from this rectangle is at most margin.lng().  In particular, latitudes
+  // are clamped while longitudes are wrapped.  Note that any expansion of an
+  // empty interval remains empty, and both components of the given margin
+  // must be non-negative.  "margin" does not need to be normalized.
   //
-  // Note that if an expanded rectangle contains a pole, it may not contain
-  // all possible lat/lng representations of that pole (see header above).
-  // Use the PolarClosure() method if you do not want this behavior.
-  //
-  // If you are trying to grow a rectangle by a certain *distance* on the
-  // sphere (e.g. 5km), use the ConvolveWithCap() method instead.
+  // NOTE: If you are trying to grow a rectangle by a certain *distance* on
+  // the sphere (e.g. 5km), use the ConvolveWithCap() method instead.
   S2LatLngRect Expanded(S2LatLng const& margin) const;
-
-  // If the rectangle does not include either pole, return it unmodified.
-  // Otherwise expand the longitude range to Full() so that the rectangle
-  // contains all possible representations of the contained pole(s).
-  S2LatLngRect PolarClosure() const;
 
   // Return the smallest rectangle containing the union of this rectangle and
   // the given rectangle.
@@ -240,7 +182,7 @@ class S2LatLngRect : public S2Region {
   // (as opposed to growing the rectangle in latitude-longitude space).  The
   // returned rectangle includes all points whose minimum distance to the
   // original rectangle is at most the given angle.
-  S2LatLngRect ConvolveWithCap(S1Angle angle) const;
+  S2LatLngRect ConvolveWithCap(S1Angle const& angle) const;
 
   // Returns the minimum distance (measured along the surface of the sphere) to
   // the given S2LatLngRect. Both S2LatLngRects must be non-empty.
@@ -271,9 +213,6 @@ class S2LatLngRect : public S2Region {
   // for details).
   bool ApproxEquals(S2LatLngRect const& other, double max_error = 1e-15) const;
 
-  // ApproxEquals() with separate tolerances for latitude and longitude.
-  bool ApproxEquals(S2LatLngRect const& other, S2LatLng const& max_error) const;
-
   ////////////////////////////////////////////////////////////////////////
   // S2Region interface (see s2region.h for details):
 
@@ -298,17 +237,17 @@ class S2LatLngRect : public S2Region {
   virtual void Encode(Encoder* const encoder) const;
   virtual bool Decode(Decoder* const decoder);
 
+ private:
   // Return true if the edge AB intersects the given edge of constant
   // longitude.
   static bool IntersectsLngEdge(S2Point const& a, S2Point const& b,
                                 R1Interval const& lat, double lng);
 
   // Return true if the edge AB intersects the given edge of constant
-  // latitude.  Requires the vectors to have unit length.
+  // latitude.
   static bool IntersectsLatEdge(S2Point const& a, S2Point const& b,
                                 double lat, S1Interval const& lng);
 
-  private:
   // Helper function. See .cc for description.
   static S1Angle GetDirectedHausdorffDistance(double lng_diff,
                                               R1Interval const& a_lat,
@@ -328,14 +267,12 @@ class S2LatLngRect : public S2Region {
 inline S2LatLngRect::S2LatLngRect(S2LatLng const& lo, S2LatLng const& hi)
   : lat_(lo.lat().radians(), hi.lat().radians()),
     lng_(lo.lng().radians(), hi.lng().radians()) {
-  DLOG_IF(ERROR, !is_valid())
-      << "Invalid rect: " << lo << ", " << hi;
+  DCHECK(is_valid()) << lo << ", " << hi;
 }
 
 inline S2LatLngRect::S2LatLngRect(R1Interval const& lat, S1Interval const& lng)
   : lat_(lat), lng_(lng) {
-  DLOG_IF(ERROR, !is_valid())
-      << "Invalid rect: " << lat << ", " << lng;
+  DCHECK(is_valid()) << lat << ", " << lng;
 }
 
 inline S2LatLngRect::S2LatLngRect()
@@ -378,6 +315,6 @@ inline bool S2LatLngRect::operator!=(S2LatLngRect const& other) const {
   return !operator==(other);
 }
 
-std::ostream& operator<<(std::ostream& os, S2LatLngRect const& r);
+ostream& operator<<(ostream& os, S2LatLngRect const& r);
 
 #endif  // UTIL_GEOMETRY_S2LATLNGRECT_H_

@@ -1,46 +1,25 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s1angle.h"
 
-#include <gflags/gflags.h>
+#include <sstream>
+
+#include "base/commandlineflags.h"
 #include "base/integral_types.h"
-#include <glog/logging.h>
+#include "base/logging.h"
 #include "gtest/gtest.h"
 #include "s2latlng.h"
 #include "s2testing.h"
 
-DEFINE_int32(iters,
-             (google::DEBUG_MODE ? 100 : 1000) * (1000 * 1000),
+using namespace std;
+
+DEFINE_int32(iters, (DEBUG_MODE ? 100 : 1000) * (1000 * 1000),
              "Run timing tests with this many iterations");
 
 TEST(S1Angle, DefaultConstructor) {
   // Check that the default constructor returns an angle of 0.
   S1Angle a;
   EXPECT_EQ(0, a.radians());
-}
-
-TEST(S1Angle, Infinity) {
-  EXPECT_LT(S1Angle::Radians(1e30), S1Angle::Infinity());
-  EXPECT_LT(-S1Angle::Infinity(), S1Angle::Zero());
-  EXPECT_EQ(S1Angle::Infinity(), S1Angle::Infinity());
-}
-
-TEST(S1Angle, Zero) {
-  EXPECT_EQ(S1Angle::Radians(0), S1Angle::Zero());
 }
 
 TEST(S1Angle, PiRadiansExactly180Degrees) {
@@ -117,13 +96,6 @@ TEST(S1Angle, ArithmeticOperationsOnAngles) {
   EXPECT_DOUBLE_EQ(1.25, tmp.radians());
 }
 
-TEST(S1Angle, Trigonometry) {
-  // Spot check a few angles to ensure that the correct function is called.
-  EXPECT_DOUBLE_EQ(1, cos(S1Angle::Degrees(0)));
-  EXPECT_DOUBLE_EQ(1, sin(S1Angle::Degrees(90)));
-  EXPECT_DOUBLE_EQ(1, tan(S1Angle::Degrees(45)));
-}
-
 TEST(S1Angle, ConstructorsThatMeasureAngles) {
   EXPECT_DOUBLE_EQ(M_PI_2,
                    S1Angle(S2Point(1, 0, 0), S2Point(0, 0, 2)).radians());
@@ -135,7 +107,7 @@ TEST(S1Angle, ConstructorsThatMeasureAngles) {
 }
 
 TEST(S1Angle, TestFormatting) {
-  std::ostringstream ss;
+  ostringstream ss;
   ss << S1Angle::Degrees(180.0);
   EXPECT_EQ("180.0000000", ss.str());
 }

@@ -1,37 +1,13 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2EDGEUTIL_H__
 #define UTIL_GEOMETRY_S2EDGEUTIL_H__
 
-#include <math.h>
-
-#include <glog/logging.h>
+#include "base/logging.h"
 #include "base/macros.h"
-#include "r2.h"
-#include "r2rect.h"
-#include "s1angle.h"
-#include "s1interval.h"
 #include "s2.h"
-#include "s2latlng.h"
 #include "s2latlngrect.h"
-#include "util/gtl/inlined_vector.h"
-#include "util/math/vector3.h"
 
-class S1ChordAngle;
 class S2LatLngRect;
 
 // This class contains various utility functions related to edges.  It
@@ -43,29 +19,12 @@ class S2EdgeUtil {
   // tested for intersection with a given fixed edge AB.
   class EdgeCrosser {
    public:
-    // Convenience constructor that calls Init() with the given fixed edge AB.
-    // All parameters must point to storage that persists for the lifetime of
-    // the EdgeCrosser object (or until the next Init() call).
-    inline EdgeCrosser(S2Point const* a, S2Point const* b);
-
     // AB is the given fixed edge, and C is the first vertex of the vertex
-    // chain.  Equivalent to using the constructor above and calling
-    // RestartAt(c).
+    // chain.  All parameters must point to fixed storage that persists for
+    // the lifetime of the EdgeCrosser object.
     inline EdgeCrosser(S2Point const* a, S2Point const* b, S2Point const* c);
 
-    // Default constructor; must be followed by a call to Init().
-    inline EdgeCrosser() {}
-
-    // Initialize the EdgeCrosser with the given fixed edge AB.  To test this
-    // edge against an edge chain, call RestartAt() with the first vertex of
-    // the chain, followed by RobustCrossing() with each subsequent vertex of
-    // the chain.  All parameters must point to storage that persists for the
-    // lifetime of the EdgeCrosser object (or until the next Init() call).
-    inline void Init(S2Point const* a, S2Point const* b);
-
-    // Call this method when your chain 'jumps' to a new place.  The given
-    // pointer must still be valid during the next call to one of the
-    // ...Crossing() methods.
+    // Call this function when your chain 'jumps' to a new place.
     inline void RestartAt(S2Point const* c);
 
     // This method is equivalent to calling the S2EdgeUtil::RobustCrossing()
@@ -73,8 +32,7 @@ class S2EdgeUtil {
     // there is a crossing, -1 if there is no crossing, and 0 if two points
     // from different edges are the same.  Returns 0 or -1 if either edge is
     // degenerate.  As a side effect, it saves vertex D to be used as the next
-    // vertex C.  Therefore the given pointer must still be valid during the
-    // next call to this method.
+    // vertex C.
     inline int RobustCrossing(S2Point const* d);
 
     // This method is equivalent to the S2EdgeUtil::EdgeOrVertexCrossing()
@@ -84,44 +42,25 @@ class S2EdgeUtil {
     inline bool EdgeOrVertexCrossing(S2Point const* d);
 
    private:
-    // These functions handle the "slow path" of RobustCrossing().
+    // This function handles the "slow path" of RobustCrossing(), which does
+    // not need to be inlined.
     int RobustCrossingInternal(S2Point const* d);
-    int RobustCrossingInternal2(S2Point const* d);
 
-    // The fields below are constant after the call to Init().
-    S2Point const* a_;
-    S2Point const* b_;
-    Vector3_d a_cross_b_;
-
-    // To reduce the number of calls to S2::ExpensiveCCW(), we compute an
-    // outward-facing tangent at A and B if necessary.  If the plane
-    // perpendicular to one of these tangents separates AB from CD (i.e., one
-    // edge on each side) then there is no intersection.
-    bool have_tangents_;  // True if the tangents have been computed.
-    S2Point a_tangent_;   // Outward-facing tangent at A.
-    S2Point b_tangent_;   // Outward-facing tangent at B.
+    // The fields below are all constant.
+    S2Point const* const a_;
+    S2Point const* const b_;
+    S2Point const a_cross_b_;
 
     // The fields below are updated for each vertex in the chain.
-    S2Point const* c_;       // Previous vertex in the vertex chain.
-    int acb_;                // The orientation of triangle ACB.
-
-    // The field below is a temporary used by RobustCrossingInternal().
-    int bda_;                // The orientation of triangle BDA.
-
-    DISALLOW_COPY_AND_ASSIGN(EdgeCrosser);
+    S2Point const* c_;     // Previous vertex in the vertex chain.
+    int acb_;              // The orientation of the triangle ACB.
   };
 
-  // This class computes a bounding rectangle that contains all edges defined
-  // by a vertex chain v0, v1, v2, ...  All vertices must be unit length.
-  // Note that the bounding rectangle of an edge can be larger than the
-  // bounding rectangle of its endpoints, e.g. consider an edge that passes
-  // through the north pole.
-  //
-  // The bounds are calculated conservatively to account for numerical errors
-  // when S2Points are converted to S2LatLngs.  More precisely, this class
-  // guarantees the following.  Let L be a closed edge chain (loop) such that
-  // the interior of the loop does not contain either pole.  Now if P is any
-  // point such that L.Contains(P), then RectBound(L).Contains(S2LatLng(P)).
+  // This class computes a bounding rectangle that contains all edges
+  // defined by a vertex chain v0, v1, v2, ...  All vertices must be unit
+  // length.  Note that the bounding rectangle of an edge can be larger than
+  // the bounding rectangle of its endpoints, e.g. consider an edge that
+  // passes through the north pole.
   class RectBounder {
    public:
     RectBounder() : bound_(S2LatLngRect::Empty()) {}
@@ -131,42 +70,17 @@ class S2EdgeUtil {
     // to AddPoint.  This means that if you don't store all of your
     // points for the lifetime of the bounder, you must at least store
     // the last two points and alternate which one you use for the
-    // next point.  Requires that b has unit length.
+    // next point.
     void AddPoint(S2Point const* b);
 
     // Return the bounding rectangle of the edge chain that connects the
-    // vertices defined so far.  This bound satisfies the guarantee made
-    // above, i.e. if the edge chain defines a loop, then the bound contains
-    // the S2LatLng coordinates of all S2Points contained by the loop.
-    S2LatLngRect GetBound() const;
-
-    // Expand a bound returned by GetBound() so that it is guaranteed to
-    // contain the bounds of any subregion whose bounds are computed using
-    // this class.  For example, consider a loop L that defines a square.
-    // GetBound() ensures that if a point P is contained by this square, then
-    // S2LatLng(P) is contained by the bound.  But now consider a diamond
-    // shaped loop S contained by L.  It is possible that GetBound() returns a
-    // *larger* bound for S than it does for L, due to rounding errors.  This
-    // method expands the bound for L so that it is guaranteed to contain the
-    // bounds of any subregion S.
-    //
-    // More precisely, if L is a loop that does not contain either pole, and S
-    // is a loop such that L.Contains(S), then
-    //
-    //   ExpandForSubregions(RectBound(L)).Contains(RectBound(S)).
-    static S2LatLngRect ExpandForSubregions(S2LatLngRect const& bound);
-
-    // Return the maximum error in GetBound() provided that the result does
-    // not include either pole.  It is only to be used for testing purposes
-    // (e.g., by passing it to S2LatLngRect::ApproxEquals).
-    static S2LatLng MaxErrorForTests();
+    // vertices defined so far.
+    S2LatLngRect GetBound() const { return bound_; }
 
    private:
     S2Point const* a_;      // The previous vertex in the chain.
     S2LatLng a_latlng_;     // The corresponding latitude-longitude.
     S2LatLngRect bound_;    // The current bounding rectangle.
-
-    DISALLOW_COPY_AND_ASSIGN(RectBounder);
   };
 
   // The purpose of this class is to find edges that intersect a given
@@ -187,8 +101,6 @@ class S2EdgeUtil {
    private:
     S1Interval interval_;    // The interval to be tested against.
     double lng0_;            // The longitude of the next v0.
-
-    DISALLOW_COPY_AND_ASSIGN(LongitudePruner);
   };
 
   // Return true if edge AB crosses CD at a point that is interior
@@ -275,7 +187,7 @@ class S2EdgeUtil {
 
   // Given a point X and an edge AB, return the distance ratio AX / (AX + BX).
   // If X happens to be on the line segment AB, this is the fraction "t" such
-  // that X == Interpolate(t, A, B).  Requires that A and B are distinct.
+  // that X == Interpolate(A, B, t).  Requires that A and B are distinct.
   static double GetDistanceFraction(S2Point const& x,
                                     S2Point const& a, S2Point const& b);
 
@@ -288,8 +200,14 @@ class S2EdgeUtil {
 
   // Like Interpolate(), except that the parameter "ax" represents the desired
   // distance from A to the result X rather than a fraction between 0 and 1.
-  static S2Point InterpolateAtDistance(S1Angle ax,
+  static S2Point InterpolateAtDistance(S1Angle const& ax,
                                        S2Point const& a, S2Point const& b);
+
+  // A slightly more efficient version of InterpolateAtDistance() that can be
+  // used when the distance AB is already known.
+  static S2Point InterpolateAtDistance(S1Angle const& ax,
+                                       S2Point const& a, S2Point const& b,
+                                       S1Angle const& ab);
 
   // Return the minimum distance from X to any point on the edge AB.  All
   // arguments should be unit length.  The result is very accurate for small
@@ -298,222 +216,77 @@ class S2EdgeUtil {
   static S1Angle GetDistance(S2Point const& x,
                              S2Point const& a, S2Point const& b);
 
-  // This is a more efficient version of GetDistance() for use when many
-  // distances are being computed and compared.  It uses an S1ChordAngle
-  // rather than an S1Angle (to avoid trigonometric operations).  If the
-  // distance is smaller than "min_dist", it updates "min_dist" and returns
-  // true.  Otherwise it returns false.
-  static bool UpdateMinDistance(S2Point const& x,
-                                S2Point const& a, S2Point const& b,
-                                S1ChordAngle* min_dist);
+  // A slightly more efficient version of GetDistance() where the cross
+  // product of the two endpoints has been precomputed.  The cross product
+  // does not need to be normalized, but should be computed using
+  // S2::RobustCrossProd() for the most accurate results.
+  static S1Angle GetDistance(S2Point const& x,
+                             S2Point const& a, S2Point const& b,
+                             S2Point const& a_cross_b);
 
   // Return the point along the edge AB that is closest to the point X.
   // The fractional distance of this point along the edge AB can be obtained
-  // using GetDistanceFraction() above.  Requires that all vectors have
-  // unit length.
+  // using GetDistanceFraction() above.
   static S2Point GetClosestPoint(S2Point const& x,
                                  S2Point const& a, S2Point const& b);
 
   // A slightly more efficient version of GetClosestPoint() where the cross
   // product of the two endpoints has been precomputed.  The cross product
   // does not need to be normalized, but should be computed using
-  // S2::RobustCrossProd() for the most accurate results.  Requires that
-  // x, a, and b have unit length.
+  // S2::RobustCrossProd() for the most accurate results.
   static S2Point GetClosestPoint(S2Point const& x,
                                  S2Point const& a, S2Point const& b,
-                                 Vector3_d const& a_cross_b);
+                                 S2Point const& a_cross_b);
 
   // Return true if every point on edge B=b0b1 is no further than "tolerance"
   // from some point on edge A=a0a1.
   // Requires that tolerance is less than 90 degrees.
   static bool IsEdgeBNearEdgeA(S2Point const& a0, S2Point const& a1,
                                S2Point const& b0, S2Point const& b1,
-                               S1Angle tolerance);
+                               S1Angle const& tolerance);
 
-  // Given an edge chain (x0, x1, x2), the wedge at x1 is the region to the
-  // left of the edges.  More precisely, it is the set of all rays from x1x0
-  // (inclusive) to x1x2 (exclusive) in the *clockwise* direction.
-  //
-  // The following functions compare two *non-empty* wedges that share the
-  // same middle vertex: A=(a0, ab1, a2) and B=(b0, ab1, b2).
+  // For an edge chain (x0, x1, x2), a wedge is the region to the left
+  // of the edges. More precisely, it is the union of all the rays
+  // from x1x0 to x1x2, clockwise.
+  // The following are Wedge comparison functions for two wedges A =
+  // (a0, ab1, a2) and B = (b0, a12, b2). These are used in S2Loops.
 
-  // Detailed relation from one wedge A to another wedge B.
-  enum WedgeRelation {
-    WEDGE_EQUALS,                 // A and B are equal.
-    WEDGE_PROPERLY_CONTAINS,      // A is a strict superset of B.
-    WEDGE_IS_PROPERLY_CONTAINED,  // A is a strict subset of B.
-    WEDGE_PROPERLY_OVERLAPS,      // A-B, B-A, and A intersect B are non-empty.
-    WEDGE_IS_DISJOINT,            // A and B are disjoint.
-  };
-
-  // Return the relation from wedge A to B.
-  // REQUIRES: A and B are non-empty.
-  static WedgeRelation GetWedgeRelation(
-      S2Point const& a0, S2Point const& ab1, S2Point const& a2,
-      S2Point const& b0, S2Point const& b2);
-
-  // Returns true if wedge A contains wedge B.  Equivalent to but faster than
-  // GetWedgeRelation() == WEDGE_PROPERLY_CONTAINS || WEDGE_EQUALS.
-  // REQUIRES: A and B are non-empty.
+  // Returns true if wedge A fully contains or is equal to wedge B.
   static bool WedgeContains(S2Point const& a0, S2Point const& ab1,
                             S2Point const& a2, S2Point const& b0,
                             S2Point const& b2);
 
-  // Returns true if wedge A intersects wedge B.  Equivalent to but faster
-  // than GetWedgeRelation() != WEDGE_IS_DISJOINT.
-  // REQUIRES: A and B are non-empty.
+  // Returns true if the intersection of the two wedges is not empty.
   static bool WedgeIntersects(S2Point const& a0, S2Point const& ab1,
                               S2Point const& a2, S2Point const& b0,
                               S2Point const& b2);
 
-  // FaceSegment represents an edge AB clipped to an S2 cube face.  It is
-  // represented by a face index and a pair of (u,v) coordinates.
-  struct FaceSegment {
-    int face;
-    R2Point a, b;
+  // Detailed relation from wedges A to wedge B.
+  enum WedgeRelation {
+    WEDGE_EQUALS,
+    WEDGE_PROPERLY_CONTAINS,  // A is a strict superset of B.
+    WEDGE_IS_PROPERLY_CONTAINED,  // A is a strict subset of B.
+    WEDGE_PROPERLY_OVERLAPS,  // All of A intsect B, A-B and B-A are non-empty.
+    WEDGE_IS_DISJOINT,  // A is disjoint from B
   };
-  typedef util::gtl::InlinedVector<FaceSegment, 6> FaceSegmentVector;
 
-  // Subdivide the given edge AB at every point where it crosses the boundary
-  // between two S2 cube faces and return the corresponding FaceSegments.  The
-  // segments are returned in order from A toward B.  The input points must be
-  // unit length.
-  //
-  // This method guarantees that the returned segments form a continuous path
-  // from A to B, and that all vertices are within kFaceClipErrorUVDist of the
-  // line AB.  All vertices lie within the [-1,1]x[-1,1] cube face rectangles.
-  // The results are consistent with S2::RobustCCW(), i.e. the edge is
-  // well-defined even its endpoints are antipodal.  [TODO(ericv): Extend the
-  // implementation of S2::RobustCrossProd so that this statement is true.]
-  static void GetFaceSegments(S2Point const& a, S2Point const& b,
-                              FaceSegmentVector* segments);
+  // Return the relation from wedge A to B.
+  static WedgeRelation GetWedgeRelation(
+      S2Point const& a0, S2Point const& ab1, S2Point const& a2,
+      S2Point const& b0, S2Point const& b2);
 
-  // Given an edge AB and a face, return the (u,v) coordinates for the portion
-  // of AB that intersects that face.  This method guarantees that the clipped
-  // vertices lie within the [-1,1]x[-1,1] cube face rectangle and are within
-  // kFaceClipErrorUVDist of the line AB, but the results may differ from
-  // those produced by GetFaceSegments.  Returns false if AB does not
-  // intersect the given face.
-  static bool ClipToFace(S2Point const& a, S2Point const& b, int face,
-                         R2Point* a_uv, R2Point* b_uv);
-
-  // Like ClipToFace, but rather than clipping to the square [-1,1]x[-1,1]
-  // in (u,v) space, this method clips to [-R,R]x[-R,R] where R=(1+padding).
-  static bool ClipToPaddedFace(S2Point const& a, S2Point const& b, int face,
-                               double padding, R2Point* a_uv, R2Point* b_uv);
-
-  // The maximum error in the vertices returned by GetFaceSegments and
-  // ClipToFace (compared to an exact calculation):
-  //
-  //  - kFaceClipErrorRadians is the maximum angle between a returned vertex
-  //    and the nearest point on the exact edge AB.  It is equal to the
-  //    maximum directional error in S2::RobustCrossProd, plus the error when
-  //    projecting points onto a cube face.
-  //
-  //  - kFaceClipErrorDist is the same angle expressed as a maximum distance
-  //    in (u,v)-space.  In other words, a returned vertex is at most this far
-  //    from the exact edge AB projected into (u,v)-space.
-
-  //  - kFaceClipErrorUVCoord is the same angle expressed as the maximum error
-  //    in an individual u- or v-coordinate.  In other words, for each
-  //    returned vertex there is a point on the exact edge AB whose u- and
-  //    v-coordinates differ from the vertex by at most this amount.
-
-  static double const kFaceClipErrorRadians;
-  static double const kFaceClipErrorUVDist;
-  static double const kFaceClipErrorUVCoord;
-
-  // Return true if the edge AB intersects the given (closed) rectangle to
-  // within the error bound below.
-  static bool IntersectsRect(R2Point const& a, R2Point const& b,
-                             R2Rect const& rect);
-
-  // The maximum error in IntersectRect.  If some point of AB is inside the
-  // rectangle by at least this distance, the result is guaranteed to be true;
-  // if all points of AB are outside the rectangle by at least this distance,
-  // the result is guaranteed to be false.  This bound assumes that "rect" is
-  // a subset of the rectangle [-1,1]x[-1,1] or extends slightly outside it
-  // (e.g., by 1e-10 or less).
-  static double const kIntersectsRectErrorUVDist;
-
-  // Given an edge AB, return the portion of AB that is contained by the given
-  // rectangle "clip".  Returns false if there is no intersection.
-  static bool ClipEdge(R2Point const& a, R2Point const& b, R2Rect const& clip,
-                       R2Point* a_clipped, R2Point* b_clipped);
-
-  // Given an edge AB and a rectangle "clip", return the bounding rectangle of
-  // the portion of AB intersected by "clip".  The resulting bound may be
-  // empty.  This is a convenience function built on top of ClipEdgeBound.
-  static R2Rect GetClippedEdgeBound(R2Point const& a, R2Point const& b,
-                                    R2Rect const& clip);
-
-  // This function can be used to clip an edge AB to sequence of rectangles
-  // efficiently.  It represents the clipped edges by their bounding boxes
-  // rather than as a pair of endpoints.  Specifically, let A'B' be some
-  // portion of an edge AB, and let "bound" be a tight bound of A'B'.  This
-  // function updates "bound" (in place) to be a tight bound of A'B'
-  // intersected with a given rectangle "clip".  If A'B' does not intersect
-  // "clip", returns false and does not necessarily update "bound".
-  //
-  // REQUIRES: "bound" is a tight bounding rectangle for some portion of AB.
-  // (This condition is automatically satisfied if you start with the bounding
-  // box of AB and clip to a sequence of rectangles, stopping when the method
-  // returns false.)
-  static bool ClipEdgeBound(R2Point const& a, R2Point const& b,
-                            R2Rect const& clip, R2Rect* bound);
-
-  // The maximum error in the vertices generated by ClipEdge and the bounds
-  // generated by ClipEdgeBound (compared to an exact calculation):
-  //
-  //  - kEdgeClipErrorUVCoord is the maximum error in a u- or v-coordinate
-  //    compared to the exact result, assuming that the points A and B are in
-  //    the rectangle [-1,1]x[1,1] or slightly outside it (by 1e-10 or less).
-  //
-  //  - kEdgeClipErrorUVDist is the maximum distance from a clipped point to
-  //    the corresponding exact result.  It is equal to the error in a single
-  //    coordinate because at most one coordinate is subject to error.
-
-  static double const kEdgeClipErrorUVCoord;
-  static double const kEdgeClipErrorUVDist;
-
-  // Given a value x that is some linear combination of a and b, return the
-  // value x1 that is the same linear combination of a1 and b1.  This function
-  // makes the following guarantees:
-  //  - If x == a, then x1 = a1 (exactly).
-  //  - If x == b, then x1 = b1 (exactly).
-  //  - If a <= x <= b, then a1 <= x1 <= b1 (even if a1 == b1).
-  // REQUIRES: a != b
-  inline static double InterpolateDouble(double x, double a, double b,
-                                         double a1, double b1);
-
- private:
   DISALLOW_IMPLICIT_CONSTRUCTORS(S2EdgeUtil);  // Contains only static methods.
 };
 
-
-//////////////////   Implementation details follow   ////////////////////
-
-
-inline S2EdgeUtil::EdgeCrosser::EdgeCrosser(S2Point const* a, S2Point const* b)
-    : a_(a), b_(b), a_cross_b_(a_->CrossProd(*b_)), have_tangents_(false) {
-}
-
 inline S2EdgeUtil::EdgeCrosser::EdgeCrosser(
     S2Point const* a, S2Point const* b, S2Point const* c)
-    : a_(a), b_(b), a_cross_b_(a_->CrossProd(*b_)), have_tangents_(false) {
+    : a_(a), b_(b), a_cross_b_(a_->CrossProd(*b_)) {
   RestartAt(c);
-}
-
-inline void S2EdgeUtil::EdgeCrosser::Init(S2Point const* a, S2Point const* b) {
-  a_ = a;
-  b_ = b;
-  a_cross_b_ = a->CrossProd(*b_);
-  have_tangents_ = false;
 }
 
 inline void S2EdgeUtil::EdgeCrosser::RestartAt(S2Point const* c) {
   c_ = c;
-  acb_ = -S2::TriageCCW(*a_, *b_, *c_, a_cross_b_);
+  acb_ = -S2::RobustCCW(*a_, *b_, *c_, a_cross_b_);
 }
 
 inline int S2EdgeUtil::EdgeCrosser::RobustCrossing(S2Point const* d) {
@@ -523,19 +296,25 @@ inline int S2EdgeUtil::EdgeCrosser::RobustCrossing(S2Point const* d) {
   // orientation of BDA and check whether it matches ACB.  This checks whether
   // the points C and D are on opposite sides of the great circle through AB.
 
-  // Recall that TriageCCW is invariant with respect to rotating its
-  // arguments, i.e. ABD has the same orientation as BDA.
-  int bda = S2::TriageCCW(*a_, *b_, *d, a_cross_b_);
-  if (acb_ == -bda && bda != 0) {
-    // The most common case -- triangles have opposite orientations.  Save the
-    // current vertex D as the next vertex C, and also save the orientation of
-    // the new triangle ACB (which is opposite to the current triangle BDA).
-    c_ = d;
-    acb_ = -bda;
-    return -1;
+  // Recall that RobustCCW is invariant with respect to rotating its
+  // arguments, i.e. ABC has the same orientation as BDA.
+  int bda = S2::RobustCCW(*a_, *b_, *d, a_cross_b_);
+  int result;
+  if (bda == -acb_ && bda != 0) {
+    result = -1;  // Most common case -- triangles have opposite orientations.
+  } else if ((bda & acb_) == 0) {
+    result = 0;  // At least one value is zero -- two vertices are identical.
+  } else {  // Slow path.
+    DCHECK_EQ(acb_, bda);
+    DCHECK_NE(0, bda);
+    result = RobustCrossingInternal(d);
   }
-  bda_ = bda;
-  return RobustCrossingInternal(d);
+  // Now save the current vertex D as the next vertex C, and also save the
+  // orientation of the new triangle ACB (which is opposite to the current
+  // triangle BDA).
+  c_ = d;
+  acb_ = -bda;
+  return result;
 }
 
 inline bool S2EdgeUtil::EdgeCrosser::EdgeOrVertexCrossing(S2Point const* d) {
@@ -552,23 +331,6 @@ inline bool S2EdgeUtil::LongitudePruner::Intersects(S2Point const& v1) {
   bool result = interval_.Intersects(S1Interval::FromPointPair(lng0_, lng1));
   lng0_ = lng1;
   return result;
-}
-
-inline bool S2EdgeUtil::ClipToFace(S2Point const& a, S2Point const& b, int face,
-                                   R2Point* a_uv, R2Point* b_uv) {
-  return ClipToPaddedFace(a, b, face, 0.0, a_uv, b_uv);
-}
-
-inline double S2EdgeUtil::InterpolateDouble(double x, double a, double b,
-                                            double a1, double b1) {
-  DCHECK_NE(a, b);
-  // To get results that are accurate near both A and B, we interpolate
-  // starting from the closer of the two points.
-  if (fabs(a - x) <= fabs(b - x)) {
-    return a1 + (b1 - a1) * (x - a) / (b - a);
-  } else {
-    return b1 + (a1 - b1) * (x - b) / (a - b);
-  }
 }
 
 #endif  // UTIL_GEOMETRY_S2EDGEUTIL_H__

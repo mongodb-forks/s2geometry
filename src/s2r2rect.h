@@ -1,44 +1,25 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S2R2RECT_H_
 #define UTIL_GEOMETRY_S2R2RECT_H_
 
-#include <iosfwd>
-
-#include <glog/logging.h>
+#include "base/basictypes.h"
+#include "base/logging.h"
 #include "r1interval.h"
-#include "r2.h"
-#include "r2rect.h"
-#include "s2.h"
 #include "s2region.h"
+#include "util/math/vector2-inl.h"
 
-class Decoder;
-class Encoder;
-class R1Interval;
-class S2Cap;
-class S2Cell;
 class S2CellId;
-class S2LatLngRect;
+class S2Cell;
+
+// TODO: Create an r2.h and move this definition into it.
+typedef Vector2_d R2Point;
 
 // This class is a stopgap measure that allows some of the S2 spherical
 // geometry machinery to be applied to planar geometry.  An S2R2Rect
-// represents a closed axis-aligned rectangle in the (x,y) plane (an R2Rect),
-// but it also happens to be a subtype of S2Region, which means that you can
-// use an S2RegionCoverer to approximate it as a collection of S2CellIds.
+// represents a closed axis-aligned rectangle in the (x,y) plane, but it also
+// happens to be a subtype of S2Region, which means that you can use an
+// S2RegionCoverer to approximate it as a collection of S2CellIds.
 //
 // With respect to the S2Cell decomposition, an S2R2Rect is interpreted as a
 // region of (s,t)-space on face 0.  In particular, the rectangle [0,1]x[0,1]
@@ -57,29 +38,23 @@ class S2LatLngRect;
 // not a "plain old datatype" (POD) because it has virtual functions.
 class S2R2Rect : public S2Region {
  public:
-  // Construct a rectangle from an R2Rect.
-  S2R2Rect(R2Rect const& rect);
-
   // Construct a rectangle from the given lower-left and upper-right points.
-  S2R2Rect(R2Point const& lo, R2Point const& hi);
+  inline S2R2Rect(R2Point const& lo, R2Point const& hi);
 
   // Construct a rectangle from the given intervals in x and y.  The two
   // intervals must either be both empty or both non-empty.
-  S2R2Rect(R1Interval const& x, R1Interval const& y);
-
-  // The canonical empty rectangle.  Use is_empty() to test for empty
-  // rectangles, since they have more than one representation.
-  static S2R2Rect Empty();
+  inline S2R2Rect(R1Interval const& x, R1Interval const& y);
 
   // Construct a rectangle that corresponds to the boundary of the given cell
   // is (s,t)-space.  Such rectangles are always a subset of [0,1]x[0,1].
   static S2R2Rect FromCell(S2Cell const& cell);
-  static S2R2Rect FromCellId(S2CellId id);
+  static S2R2Rect FromCellId(S2CellId const& id);
 
   // Construct a rectangle from a center point and size in each dimension.
   // Both components of size should be non-negative, i.e. this method cannot
   // be used to create an empty rectangle.
-  static S2R2Rect FromCenterSize(R2Point const& center, R2Point const& size);
+  static S2R2Rect FromCenterSize(R2Point const& center,
+                                 R2Point const& size);
 
   // Convenience method to construct a rectangle containing a single point.
   static S2R2Rect FromPoint(R2Point const& p);
@@ -92,31 +67,27 @@ class S2R2Rect : public S2Region {
   static S2R2Rect FromPointPair(R2Point const& p1, R2Point const& p2);
 
   // Accessor methods.
-  R1Interval const& x() const;
-  R1Interval const& y() const;
-  R2Point lo() const;
-  R2Point hi() const;
+  R1Interval const& x() const { return x_; }
+  R1Interval const& y() const { return y_; }
+  R1Interval *mutable_x() { return &x_; }
+  R1Interval *mutable_y() { return &y_; }
+  R2Point lo() const { return R2Point(x_.lo(), y_.lo()); }
+  R2Point hi() const { return R2Point(x_.hi(), y_.hi()); }
 
-  // Methods that allow the S2R2Rect to be accessed as a vector.
-  R1Interval const& operator[](int i) const;
-  R1Interval& operator[](int i);
+  // The canonical empty rectangle.  Use is_empty() to test for empty
+  // rectangles, since they have more than one representation.
+  static inline S2R2Rect Empty();
 
   // Return true if the rectangle is valid, which essentially just means
   // that if the bound for either axis is empty then both must be.
-  bool is_valid() const;
+  inline bool is_valid() const;
 
   // Return true if the rectangle is empty, i.e. it contains no points at all.
-  bool is_empty() const;
+  inline bool is_empty() const;
 
   // Return the k-th vertex of the rectangle (k = 0,1,2,3) in CCW order.
   // Vertex 0 is in the lower-left corner.
   R2Point GetVertex(int k) const;
-
-  // Return the vertex in direction "i" along the x-axis (0=left, 1=right) and
-  // direction "j" along the y-axis (0=down, 1=up).  Equivalently, return the
-  // vertex constructed by selecting endpoint "i" of the x-interval (0=lo,
-  // 1=hi) and vertex "j" of the y-interval.
-  R2Point GetVertex(int i, int j) const;
 
   // Return the center of the rectangle in (x,y)-space
   // (in general this is not the center of the region on the sphere).
@@ -154,17 +125,12 @@ class S2R2Rect : public S2Region {
   // The rectangle is expanded by the minimum amount possible.
   void AddPoint(R2Point const& p);
 
-  // Return the closest point in the rectangle to the given point "p".
-  // The rectangle must be non-empty.
-  R2Point ClampPoint(R2Point const& p) const;
-
-  // Return a rectangle that has been expanded on each side in the x-direction
-  // by margin.x(), and on each side in the y-direction by margin.y().  If
-  // either margin is empty, then shrink the interval on the corresponding
-  // sides instead.  The resulting rectangle may be empty.  Any expansion of
-  // an empty rectangle remains empty.
+  // Return a rectangle that contains all points whose x-distance from this
+  // rectangle is at most margin.x(), and whose y-distance from this rectangle
+  // is at most margin.y().  Note that any expansion of an empty interval
+  // remains empty, and both components of the given margin must be
+  // non-negative.
   S2R2Rect Expanded(R2Point const& margin) const;
-  S2R2Rect Expanded(double margin) const;
 
   // Return the smallest rectangle containing the union of this rectangle and
   // the given rectangle.
@@ -175,7 +141,7 @@ class S2R2Rect : public S2Region {
   S2R2Rect Intersection(S2R2Rect const& other) const;
 
   // Return true if two rectangles contains the same set of points.
-  bool operator==(S2R2Rect const& other) const;
+  inline bool operator==(S2R2Rect const& other) const;
 
   // Return true if the x- and y-intervals of the two rectangles are the same
   // up to the given tolerance (see r1interval.h for details).
@@ -198,98 +164,42 @@ class S2R2Rect : public S2Region {
   virtual bool Contains(S2Cell const& cell) const;
   virtual bool MayIntersect(S2Cell const& cell) const;
   virtual void Encode(Encoder* const encoder) const {
-    LOG(FATAL) << "Unimplemented";
+    S2LOG(FATAL) << "Unimplemented";
   }
   virtual bool Decode(Decoder* const decoder) { return false; }
 
  private:
-  R2Rect rect_;
+  R1Interval x_;
+  R1Interval y_;
 };
 
-std::ostream& operator<<(std::ostream& os, S2R2Rect const& r);
-
-
-//////////////////   Implementation details follow   ////////////////////
-
-
-inline S2R2Rect::S2R2Rect(R2Rect const& rect) : rect_(rect) {}
-
 inline S2R2Rect::S2R2Rect(R2Point const& lo, R2Point const& hi)
-    : rect_(lo, hi) {}
+  : x_(lo.x(), hi.x()), y_(lo.y(), hi.y()) {
+  DCHECK(is_valid());
+}
 
 inline S2R2Rect::S2R2Rect(R1Interval const& x, R1Interval const& y)
-    : rect_(x, y) {}
-
-inline S2R2Rect S2R2Rect::FromCenterSize(R2Point const& center,
-                                         R2Point const& size) {
-  return S2R2Rect(R2Rect::FromCenterSize(center, size));
+  : x_(x), y_(y) {
+  DCHECK(is_valid());
 }
 
-inline S2R2Rect S2R2Rect::FromPoint(R2Point const& p) {
-  return S2R2Rect(R2Rect::FromPoint(p));
+inline S2R2Rect S2R2Rect::Empty() {
+  return S2R2Rect(R1Interval::Empty(), R1Interval::Empty());
 }
 
-inline S2R2Rect S2R2Rect::FromPointPair(R2Point const& p1, R2Point const& p2) {
-  return S2R2Rect(R2Rect::FromPointPair(p1, p2));
+inline bool S2R2Rect::is_valid() const {
+  // The x/y ranges must either be both empty or both non-empty.
+  return x_.is_empty() == y_.is_empty();
 }
 
-inline R1Interval const& S2R2Rect::x() const { return rect_.x(); }
-inline R1Interval const& S2R2Rect::y() const { return rect_.y(); }
-inline R2Point S2R2Rect::lo() const { return rect_.lo(); }
-inline R2Point S2R2Rect::hi() const { return rect_.hi(); }
-inline R1Interval const& S2R2Rect::operator[](int i) const { return rect_[i]; }
-inline R1Interval& S2R2Rect::operator[](int i) { return rect_[i]; }
-inline S2R2Rect S2R2Rect::Empty() { return S2R2Rect(R2Rect::Empty()); }
-inline bool S2R2Rect::is_valid() const { return rect_.is_valid(); }
-inline bool S2R2Rect::is_empty() const { return rect_.is_empty(); }
-inline R2Point S2R2Rect::GetVertex(int k) const { return rect_.GetVertex(k); }
-inline R2Point S2R2Rect::GetVertex(int i, int j) const {
-  return rect_.GetVertex(i, j);
+inline bool S2R2Rect::is_empty() const {
+  return x_.is_empty();
 }
-inline R2Point S2R2Rect::GetCenter() const { return rect_.GetCenter(); }
-inline R2Point S2R2Rect::GetSize() const { return rect_.GetSize(); }
-inline bool S2R2Rect::Contains(R2Point const& p) const {
-  return rect_.Contains(p);
-}
-inline bool S2R2Rect::InteriorContains(R2Point const& p) const {
-  return rect_.InteriorContains(p);
-}
-inline bool S2R2Rect::Contains(S2R2Rect const& other) const {
-  return rect_.Contains(other.rect_);
-}
-inline bool S2R2Rect::InteriorContains(S2R2Rect const& other) const {
-  return rect_.InteriorContains(other.rect_);
-}
-inline bool S2R2Rect::Intersects(S2R2Rect const& other) const {
-  return rect_.Intersects(other.rect_);
-}
-inline bool S2R2Rect::InteriorIntersects(S2R2Rect const& other) const {
-  return rect_.InteriorIntersects(other.rect_);
-}
-inline void S2R2Rect::AddPoint(R2Point const& p) {
-  rect_.AddPoint(p);
-}
-inline R2Point S2R2Rect::ClampPoint(R2Point const& p) const {
-  return rect_.ClampPoint(p);
-}
-inline S2R2Rect S2R2Rect::Expanded(R2Point const& margin) const {
-  return S2R2Rect(rect_.Expanded(margin));
-}
-inline S2R2Rect S2R2Rect::Expanded(double margin) const {
-  return S2R2Rect(rect_.Expanded(margin));
-}
-inline S2R2Rect S2R2Rect::Union(S2R2Rect const& other) const {
-  return S2R2Rect(rect_.Union(other.rect_));
-}
-inline S2R2Rect S2R2Rect::Intersection(S2R2Rect const& other) const {
-  return S2R2Rect(rect_.Intersection(other.rect_));
-}
+
 inline bool S2R2Rect::operator==(S2R2Rect const& other) const {
-  return rect_ == other.rect_;
+  return x_ == other.x_ && y_ == other.y_;
 }
-inline bool S2R2Rect::ApproxEquals(S2R2Rect const& other,
-                                   double max_error) const {
-  return rect_.ApproxEquals(other.rect_, max_error);
-}
+
+ostream& operator<<(ostream& os, S2R2Rect const& r);
 
 #endif  // UTIL_GEOMETRY_S2R2RECT_H_

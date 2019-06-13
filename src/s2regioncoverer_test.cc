@@ -1,56 +1,47 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2regioncoverer.h"
 
-#include <math.h>
 #include <stdio.h>
-#include <algorithm>
-#include <ext/hash_map>
-using __gnu_cxx::hash;
-using __gnu_cxx::hash_map;
-#include <queue>
-#include <string>
-#include <vector>
 
-#include <gflags/gflags.h>
-#include "base/integral_types.h"
-#include <glog/logging.h>
-#include "base/stringprintf.h"
+#include <algorithm>
+using std::min;
+using std::max;
+using std::swap;
+using std::reverse;
+
+#include <hash_map>
+using __gnu_cxx::hash_map;
+
+#include <queue>
+using std::priority_queue;
+
+#include <string>
+using std::string;
+
+#include <vector>
+using std::vector;
+
+
+#include "base/commandlineflags.h"
+#include "base/logging.h"
 #include "base/strtoint.h"
 #include "strings/split.h"
-#include "gtest/gtest.h"
-#include "s1angle.h"
+#include "strings/stringprintf.h"
+#include "testing/base/public/benchmark.h"
+#include "testing/base/public/gunit.h"
 #include "s2cap.h"
 #include "s2cell.h"
 #include "s2cellid.h"
 #include "s2cellunion.h"
 #include "s2latlng.h"
-#include "s2region.h"
+#include "s2loop.h"
 #include "s2testing.h"
-
-using std::max;
-using std::min;
-using std::priority_queue;
-using std::vector;
 
 DEFINE_string(max_cells, "4,8",
               "Comma-separated list of values to use for 'max_cells'");
 
-DEFINE_int32(iters, google::DEBUG_MODE ? 1000 : 100000,
+DEFINE_int32(iters, DEBUG_MODE ? 1000 : 100000,
              "Number of random caps to try for each max_cells value");
 
 TEST(S2RegionCoverer, RandomCells) {
@@ -150,7 +141,7 @@ TEST(S2RegionCoverer, SimpleCoverings) {
     S2Cap cap = S2Testing::GetRandomCap(0.1 * S2Cell::AverageArea(kMaxLevel),
                                         max_area);
     vector<S2CellId> covering;
-    S2RegionCoverer::GetSimpleCovering(cap, cap.center(), level, &covering);
+    S2RegionCoverer::GetSimpleCovering(cap, cap.axis(), level, &covering);
     CheckCovering(coverer, cap, covering, false);
   }
 }
@@ -201,7 +192,7 @@ static void TestAccuracy(int max_cells) {
     double const min_cap_area = S2Cell::AverageArea(S2CellId::kMaxLevel)
                                 * max_cells * max_cells;
     S2Cap cap = S2Testing::GetRandomCap(min_cap_area, 4 * M_PI);
-    double cap_area = cap.GetArea();
+    double cap_area = cap.area();
 
     double min_area = 1e30;
     int min_cells = 1 << 30;
@@ -246,7 +237,7 @@ static void TestAccuracy(int max_cells) {
            static_cast<double>(FLAGS_iters));
     printf("  Average area ratio: %.4f\n", ratio_total[method] / FLAGS_iters);
     vector<double>& mratios = ratios[method];
-    std::sort(mratios.begin(), mratios.end());
+    sort(mratios.begin(), mratios.end());
     printf("  Median ratio: %.4f\n", mratios[mratios.size() / 2]);
     printf("  Max ratio: %.4f\n", max_ratio[method]);
     printf("  Min ratio: %.4f\n", min_ratio[method]);
@@ -259,51 +250,41 @@ static void TestAccuracy(int max_cells) {
     printf("  Caps with worst approximation ratios:\n");
     for (; !worst_caps.empty(); worst_caps.pop()) {
       WorstCap const& w = worst_caps.top();
-      S2LatLng ll(w.cap.center());
+      S2LatLng ll(w.cap.axis());
       printf("    Ratio %.4f, Cells %d, "
              "Center (%.8f, %.8f), Km %.6f\n",
              w.ratio, w.num_cells,
              ll.lat().degrees(), ll.lng().degrees(),
-             w.cap.GetRadius().radians() * 6367.0);
+             w.cap.angle().radians() * 6367.0);
     }
   }
 }
 
 TEST(S2RegionCoverer, Accuracy) {
-  vector<string> max_cells =
-      strings::Split(FLAGS_max_cells, ",", strings::SkipEmpty());
+  vector<string> max_cells;
+  SplitStringUsing(FLAGS_max_cells, ",", &max_cells);
   for (int i = 0; i < max_cells.size(); ++i) {
     TestAccuracy(atoi32(max_cells[i].c_str()));
   }
 }
 
-TEST(S2RegionCoverer, InteriorCovering) {
-  // We construct the region the following way. Start with S2 cell of level l.
-  // Remove from it one of its grandchildren (level l+2). If we then set
-  //   min_level < l + 1
-  //   max_level > l + 2
-  //   max_cells = 3
-  // the best interior covering should contain 3 children of the initial cell,
-  // that were not effected by removal of a grandchild.
-  const int level = 12;
-  S2CellId small_cell = S2CellId::FromPoint(S2Testing::RandomPoint()).parent(level + 2);
-  S2CellId large_cell = small_cell.parent(level);
-  vector<S2CellId> small_cell_vector(1, small_cell);
-  vector<S2CellId> large_cell_vector(1, large_cell);
-  S2CellUnion small_cell_union;
-  small_cell_union.Init(small_cell_vector);
-  S2CellUnion large_cell_union;
-  large_cell_union.Init(large_cell_vector);
-  S2CellUnion diff;
-  diff.GetDifference(&large_cell_union, &small_cell_union);
+
+// Two concentric loops don't cross so there is no 'fast exit'
+static void BM_Covering(int iters, int max_cells, int num_vertices) {
+  StopBenchmarkTiming();
   S2RegionCoverer coverer;
-  coverer.set_max_cells(3);
-  coverer.set_max_level(level + 3);
-  coverer.set_min_level(level);
-  vector<S2CellId> interior;
-  coverer.GetInteriorCovering(diff, &interior);
-  ASSERT_EQ(interior.size(), 3);
-  for (int i = 0; i < 3; ++i) {
-    EXPECT_EQ(interior[i].level(), level + 1);
+  coverer.set_max_cells(max_cells);
+
+  for (int i = 0; i < iters; ++i) {
+    S2Point center = S2Testing::RandomPoint();
+    S2Loop* loop = S2Testing::MakeRegularLoop(center, num_vertices, 0.005);
+
+    StartBenchmarkTiming();
+    vector<S2CellId> covering;
+    coverer.GetCovering(*loop, &covering);
+    StopBenchmarkTiming();
+
+    delete loop;
   }
 }
+BENCHMARK(BM_Covering)->RangePair(8, 1024, 8, 1<<17);

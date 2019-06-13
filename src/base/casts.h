@@ -1,18 +1,5 @@
 // Copyright 2009 Google Inc. All Rights Reserved.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-//
 // Various Google-specific casting templates.
 //
 // This code is compiled directly on many platforms, including client
@@ -26,34 +13,30 @@
 #include <assert.h>         // for use with down_cast<>
 #include <string.h>         // for memcpy
 #include <limits.h>         // for enumeration casts and tests
+#include <typeinfo>         // for enumeration casts and tests
 
 #include "base/macros.h"
-#include "base/template_util.h"
-#include "base/type_traits.h"
+
 
 // Use implicit_cast as a safe version of static_cast or const_cast
-// for implicit conversions. For example:
-// - Upcasting in a type hierarchy.
-// - Performing arithmetic conversions (int32 to int64, int to double, etc.).
-// - Adding const or volatile qualifiers.
+// for upcasting in the type hierarchy (i.e. casting a pointer to Foo
+// to a pointer to SuperclassOfFoo or casting a pointer to Foo to
+// a const pointer to Foo).
+// When you use implicit_cast, the compiler checks that the cast is safe.
+// Such explicit implicit_casts are necessary in surprisingly many
+// situations where C++ demands an exact type match instead of an
+// argument type convertable to a target type.
 //
-// In general, implicit_cast can be used to convert this code
-//   To to = from;
-//   DoSomething(to);
-// to this
-//   DoSomething(implicit_cast<To>(from));
+// The From type can be inferred, so the preferred syntax for using
+// implicit_cast is the same as for static_cast etc.:
 //
-// base::identity_ is used to make a non-deduced context, which
-// forces all callers to explicitly specify the template argument.
-template<typename To>
-inline To implicit_cast(typename base::identity_<To>::type to) {
-  return to;
-}
-
-// This version of implicit_cast is used when two template arguments
-// are specified. It's obsolete and should not be used.
+//   implicit_cast<ToType>(expr)
+//
+// implicit_cast would have been part of the C++ standard library,
+// but the proposal was submitted too late.  It will probably make
+// its way into the language in the future.
 template<typename To, typename From>
-inline To implicit_cast(typename base::identity_<From>::type const &f) {
+inline To implicit_cast(From const &f) {
   return f;
 }
 
@@ -85,7 +68,7 @@ inline To down_cast(From* f) {                   // so we only accept pointers
 
   // TODO(user): This should use COMPILE_ASSERT.
   if (false) {
-    ::implicit_cast<From*, To>(NULL);
+    implicit_cast<From*, To>(0);
   }
 
   // uses RTTI in dbg and fastbuild. asserts are disabled in opt builds.
@@ -107,7 +90,7 @@ inline To down_cast(From& f) {
   typedef typename base::remove_reference<To>::type* ToAsPointer;
   if (false) {
     // Compile-time check that To inherits from From. See above for details.
-    ::implicit_cast<From*, ToAsPointer>(NULL);
+    implicit_cast<From*, ToAsPointer>(0);
   }
 
   assert(dynamic_cast<ToAsPointer>(&f) != NULL);  // RTTI: debug mode only
@@ -137,7 +120,7 @@ inline To down_cast(From& f) {
 //
 // This is true for any cast syntax, either *(int*)&f or
 // *reinterpret_cast<int*>(&f).  And it is particularly true for
-// conversions between integral lvalues and floating-point lvalues.
+// conversions betweeen integral lvalues and floating-point lvalues.
 //
 // The purpose of 3.10 -15- is to allow optimizing compilers to assume
 // that expressions with different types refer to different memory.  gcc
@@ -177,8 +160,7 @@ template <class Dest, class Source>
 inline Dest bit_cast(const Source& source) {
   // Compile time assertion: sizeof(Dest) == sizeof(Source)
   // A compile error here means your Dest and Source have different sizes.
-  typedef char VerifySizesAreEqual[sizeof(Dest) == sizeof(Source) ? 1 : -1]
-    ATTRIBUTE_UNUSED;
+  typedef char VerifySizesAreEqual [sizeof(Dest) == sizeof(Source) ? 1 : -1];
 
   Dest dest;
   memcpy(&dest, &source, sizeof(dest));
@@ -200,7 +182,7 @@ inline Dest bit_cast(const Source& source) {
 //   enum A { A_min = -18, A_max = 33 };
 //   MAKE_ENUM_LIMITS(A, A_min, A_max)
 //
-// Convert an int to an enum in one of two ways.  The prefered way is a
+// Convert an enum to an int in one of two ways.  The prefered way is a
 // tight conversion, which ensures that A_min <= value <= A_max.
 //
 //   A var = tight_enum_cast<A>(3);
@@ -311,7 +293,7 @@ inline bool loose_enum_test(int e_val) {
   // Find the binary bounding negative of both e_min and e_max.
   b_min &= e_min;
 
-  // However, if e_min is positive, the result will be positive.
+  // However, if e_min is postive, the result will be positive.
   // Now clear all bits right of the most significant clear bit,
   // which is a negative saturation for negative numbers.
   // In the case of positive numbers, this is flush to zero.
@@ -327,13 +309,13 @@ inline bool loose_enum_test(int e_val) {
   // Find the unary bounding positive number of e_max.
   int b_max = e_max_sign ^ e_max;
 
-  // Find the binary bounding positive number of that
+  // Find the binary bounding postive number of that
   // and the unary bounding positive number of e_min.
   int e_min_sign = e_min >> (sizeof(e_val)*8 - 1);
   b_max |= e_min_sign ^ e_min;
 
   // Now set all bits right of the most significant set bit,
-  // which is a positive saturation for positive numbers.
+  // which is a postive saturation for positive numbers.
   b_max |= b_max >> 1;
   b_max |= b_max >> 2;
   b_max |= b_max >> 4;
@@ -379,18 +361,21 @@ inline bool tight_enum_test_cast(int e_val, Enum* e_var) {
 // it is done directly.  So, we do it indirectly.
 // The following function is defined in logging.cc.
 
-namespace base {
-namespace internal {
+namespace logging {
 
-void WarnEnumCastError(int value_of_int);
+void WarnEnumCastError(const char* name_of_type, int value_of_int);
 
-}  // namespace internal
-}  // namespace base
+}  // namespace logging
 
 template <typename Enum>
 inline Enum loose_enum_cast(int e_val) {
   if (!loose_enum_test<Enum>(e_val)) {
-    base::internal::WarnEnumCastError(e_val);
+#if __GNUC__ && !__GXX_RTTI
+    // Gcc and -fno-rtti; can't issue a warning with enum name.
+    assert(false);
+#else
+    logging::WarnEnumCastError(typeid(Enum).name(), e_val);
+#endif
   }
   return static_cast<Enum>(e_val);
 }
@@ -398,7 +383,12 @@ inline Enum loose_enum_cast(int e_val) {
 template <typename Enum>
 inline Enum tight_enum_cast(int e_val) {
   if (!tight_enum_test<Enum>(e_val)) {
-    base::internal::WarnEnumCastError(e_val);
+#if __GNUC__ && !__GXX_RTTI
+    // Gcc and -fno-rtti; can't issue a warning with enum name.
+    assert(false);
+#else
+    logging::WarnEnumCastError(typeid(Enum).name(), e_val);
+#endif
   }
   return static_cast<Enum>(e_val);
 }

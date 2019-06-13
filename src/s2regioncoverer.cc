@@ -1,69 +1,58 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #include "s2regioncoverer.h"
 
+#ifndef OS_WINDOWS
 #include <pthread.h>
-#include <stddef.h>
-#include <stdlib.h>
-#include <string.h>
-#include <algorithm>
-#include <functional>
-#include <ext/hash_set>
-using __gnu_cxx::hash;
-using __gnu_cxx::hash_set;
-#include <queue>
-#include <vector>
+#endif
 
-#include <glog/logging.h>
-#include "s1angle.h"
+#include <algorithm>
+using std::min;
+using std::max;
+using std::swap;
+using std::reverse;
+
+#include <functional>
+using std::less;
+
+#include <queue>
+using std::priority_queue;
+
+#include <vector>
+using std::vector;
+
+
+#include "base/logging.h"
 #include "s2.h"
 #include "s2cap.h"
 #include "s2cellunion.h"
-#include "s2region.h"
-
-using std::max;
-using std::min;
-using std::vector;
+#include "mongo/base/init.h"
 
 // Define storage for header file constants (the values are not needed here).
-int const S2RegionCoverer::kDefaultMaxCells;
+int const S2RegionCoverer::kDefaultMaxCells = 8;
 
 // We define our own own comparison function on QueueEntries in order to
 // make the results deterministic.  Using the default less<QueueEntry>,
 // entries of equal priority would be sorted according to the memory address
 // of the candidate.
 
-struct S2RegionCoverer::CompareQueueEntries : public std::less<QueueEntry> {
-  bool operator()(QueueEntry const& x, QueueEntry const& y) const {
+struct S2RegionCoverer::CompareQueueEntries : public less<QueueEntry> {
+  bool operator()(QueueEntry const& x, QueueEntry const& y) {
     return x.first < y.first;
   }
 };
 
 static S2Cell face_cells[6];
 
-void Init() {
+static void Init() {
   for (int face = 0; face < 6; ++face) {
-    face_cells[face] = S2Cell::FromFace(face);
+    face_cells[face] = S2Cell::FromFacePosLevel(face, 0, 0);
   }
 }
 
-static pthread_once_t init_once = PTHREAD_ONCE_INIT;
-inline static void MaybeInit() {
-  pthread_once(&init_once, Init);
+MONGO_INITIALIZER_WITH_PREREQUISITES(S2RegionCovererInit, ("S2CellIdInit"))(mongo::InitializerContext *context) {
+    Init();
+    return mongo::Status::OK();
 }
 
 S2RegionCoverer::S2RegionCoverer() :
@@ -74,8 +63,6 @@ S2RegionCoverer::S2RegionCoverer() :
   region_(NULL),
   result_(new vector<S2CellId>),
   pq_(new CandidateQueue) {
-  // Initialize the constants
-  MaybeInit();
 }
 
 S2RegionCoverer::~S2RegionCoverer() {
@@ -108,6 +95,7 @@ S2RegionCoverer::Candidate* S2RegionCoverer::NewCandidate(S2Cell const& cell) {
   if (!region_->MayIntersect(cell)) return NULL;
 
   bool is_terminal = false;
+  size_t size = sizeof(Candidate);
   if (cell.level() >= min_level_) {
     if (interior_covering_) {
       if (region_->Contains(cell)) {
@@ -121,19 +109,14 @@ S2RegionCoverer::Candidate* S2RegionCoverer::NewCandidate(S2Cell const& cell) {
       }
     }
   }
-  size_t children_size = 0;
   if (!is_terminal) {
-    children_size = sizeof(Candidate*) << max_children_shift();
+    size += sizeof(Candidate*) << max_children_shift();
   }
-  Candidate* candidate =
-      static_cast<Candidate*>(malloc(sizeof(Candidate) + children_size));
+  void* candidateStorage = malloc(size);
+  memset(candidateStorage, 0, size);
+  Candidate* candidate = new(candidateStorage) Candidate;
   candidate->cell = cell;
   candidate->is_terminal = is_terminal;
-  candidate->num_children = 0;
-  if (!is_terminal) {
-    std::fill_n(&candidate->children[0], 1 << max_children_shift(),
-                implicit_cast<Candidate*>(NULL));
-  }
   ++candidates_created_counter_;
   return candidate;
 }
@@ -207,7 +190,7 @@ void S2RegionCoverer::AddCandidate(Candidate* candidate) {
     int priority = -((((candidate->cell.level() << max_children_shift())
                        + candidate->num_children) << max_children_shift())
                      + num_terminals);
-    pq_->push(std::make_pair(priority, candidate));
+    pq_->push(make_pair(priority, candidate));
     VLOG(2) << "Push: " << candidate->cell.id() << " (" << priority << ") ";
   }
 }
@@ -221,7 +204,7 @@ void S2RegionCoverer::GetInitialCandidates() {
     // Find the maximum level such that the bounding cap contains at most one
     // cell vertex at that level.
     S2Cap cap = region_->GetCapBound();
-    int level = min(S2::kMinWidth.GetMaxLevel(2 * cap.GetRadius().radians()),
+    int level = min(S2::kMinWidth.GetMaxLevel(2 * cap.angle().radians()),
                     min(max_level(), S2CellId::kMaxLevel - 1));
     if (level_mod() > 1 && level > min_level()) {
       level -= (level - min_level()) % level_mod();
@@ -233,16 +216,16 @@ void S2RegionCoverer::GetInitialCandidates() {
       // subcell of the parent cell contains it.
       vector<S2CellId> base;
       base.reserve(4);
-      S2CellId id = S2CellId::FromPoint(cap.center());
+      S2CellId id = S2CellId::FromPoint(cap.axis());
       id.AppendVertexNeighbors(level, &base);
-      for (int i = 0; i < base.size(); ++i) {
+      for (size_t i = 0; i < base.size(); ++i) {
         AddCandidate(NewCandidate(S2Cell(base[i])));
       }
       return;
     }
   }
   // Default: start with all six cube faces.
-  for (int face = 0; face < 6; ++face) {
+  for (size_t face = 0; face < 6; ++face) {
     AddCandidate(NewCandidate(face_cells[face]));
   }
 }
@@ -269,31 +252,21 @@ void S2RegionCoverer::GetCoveringInternal(S2Region const& region) {
 
   GetInitialCandidates();
   while (!pq_->empty() &&
-         (!interior_covering_ || result_->size() < max_cells_)) {
+         (!interior_covering_ || result_->size() < (size_t)max_cells_)) {
     Candidate* candidate = pq_->top().second;
     pq_->pop();
     VLOG(2) << "Pop: " << candidate->cell.id();
-    // For interior covering we keep subdividing no matter how many children
-    // candidate has. If we reach max_cells_ before expanding all children,
-    // we will just use some of them.
-    // For exterior covering we cannot do this, because result has to cover the
-    // whole region, so all children have to be used.
-    // candidate->num_children == 1 case takes care of the situation when we
-    // already have more then max_cells_ in relust (min_level is too high).
-    // Subdividing of the candidate with one child does no harm in this case.
-    if (interior_covering_ ||
-        candidate->cell.level() < min_level_ ||
+    if (candidate->cell.level() < min_level_ ||
         candidate->num_children == 1 ||
-        result_->size() + pq_->size() + candidate->num_children <= max_cells_) {
+        (int)result_->size() + (int)(interior_covering_ ? 0 : (int)pq_->size()) +
+            candidate->num_children <= max_cells_) {
       // Expand this candidate into its children.
       for (int i = 0; i < candidate->num_children; ++i) {
-        if (interior_covering_ && result_->size() >= max_cells_) {
-          DeleteCandidate(candidate->children[i], true);
-        } else {
-          AddCandidate(candidate->children[i]);
-        }
+        AddCandidate(candidate->children[i]);
       }
       DeleteCandidate(candidate, false);
+    } else if (interior_covering_) {
+      DeleteCandidate(candidate, true);
     } else {
       candidate->is_terminal = true;
       AddCandidate(candidate);
@@ -346,8 +319,8 @@ void S2RegionCoverer::GetInteriorCellUnion(S2Region const& region,
   interior->InitSwap(result_.get());
 }
 
-void S2RegionCoverer::FloodFill(S2Region const& region, S2CellId start,
-                                vector<S2CellId>* output) {
+void S2RegionCoverer::FloodFill(
+    S2Region const& region, S2CellId const& start, vector<S2CellId>* output) {
   hash_set<S2CellId> all;
   vector<S2CellId> frontier;
   output->clear();

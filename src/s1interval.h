@@ -1,29 +1,21 @@
 // Copyright 2005 Google Inc. All Rights Reserved.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS-IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
-// Author: ericv@google.com (Eric Veach)
 
 #ifndef UTIL_GEOMETRY_S1INTERVAL_H_
 #define UTIL_GEOMETRY_S1INTERVAL_H_
 
-#include <math.h>
-#include <iosfwd>
 #include <iostream>
+using std::ostream;
+using std::cout;
+using std::endl;
+#include "base/definer.h"
 
-#include <glog/logging.h>
-#include "base/type_traits.h"
-#include "util/math/vector2.h"  // IWYU pragma: export
+#ifdef OS_WINDOWS
+#define _USE_MATH_DEFINES
+#endif
+#include <cmath>
+#include "base/basictypes.h"
+#include "base/logging.h"
+#include "util/math/vector2-inl.h"
 
 // An S1Interval represents a closed interval on a unit circle (also known
 // as a 1-dimensional sphere).  It is capable of representing the empty
@@ -74,18 +66,22 @@ class S1Interval {
   // interval and calling AddPoint() twice, but it is more efficient.
   static S1Interval FromPointPair(double p1, double p2);
 
-  // Accessors methods.
   double lo() const { return bounds_[0]; }
   double hi() const { return bounds_[1]; }
-
-  // Methods that allow the S1Interval to be accessed as a vector.  (The
-  // recommended style is to use lo() and hi() whenever possible, but these
-  // methods are useful when the endpoint to be selected is not constant.)
-  //
-  // Only const versions of these methods are provided, since S1Interval
-  // has invariants that must be maintained after each update.
-  double operator[](int i) const { return bounds_[i]; }
+  double bound(int i) const { return bounds_[i]; }
   Vector2_d const& bounds() const { return bounds_; }
+
+  // Methods to modify one endpoint of an existing S1Interval.  Requires that
+  // the resulting S1Interval is valid.  This implies you cannot call this
+  // method on an Empty() or Full() interval, since these intervals do not
+  // have any endpoints.
+  //
+  // Do not use these methods if you want to replace both endpoints of the
+  // interval; use a constructor instead.  For example:
+  //
+  //   *lng_bounds = S1Interval(lng_lo, lng_hi);
+  void set_lo(double p) { bounds_[0] = p; DCHECK(is_valid()); }
+  void set_hi(double p) { bounds_[1] = p; DCHECK(is_valid()); }
 
   // An interval is valid if neither bound exceeds Pi in absolute value,
   // and the value -Pi appears only in the Empty() and Full() intervals.
@@ -156,16 +152,10 @@ class S1Interval {
   // contains the given point "p" (an angle in the range [-Pi, Pi]).
   void AddPoint(double p);
 
-  // Return the closest point in the interval to the given point "p".
-  // The interval must be non-empty.
-  double ClampPoint(double p) const;
-
-  // Return an interval that has been expanded on each side by the given
-  // distance "margin".  If "margin" is negative, then shrink the interval on
-  // each side by "margin" instead.  The resulting interval may be empty or
-  // full.  Any expansion (positive or negative) of a full interval remains
-  // full, and any expansion of an empty interval remains empty.
-  S1Interval Expanded(double margin) const;
+  // Return an interval that contains all points with a distance "radius" of a
+  // point in this interval.  Note that the expansion of an empty interval is
+  // always empty.  The radius must be non-negative.
+  S1Interval Expanded(double radius) const;
 
   // Return the smallest interval that contains this interval and the
   // given interval "y".
@@ -179,28 +169,9 @@ class S1Interval {
   // Return true if two intervals contains the same set of points.
   inline bool operator==(S1Interval const& y) const;
 
-  // Return true if this interval can be transformed into the given interval by
-  // moving each endpoint by at most "max_error" (and without the endpoints
-  // crossing, which would invert the interval).  Empty and full intervals are
-  // considered to start at an arbitrary point on the unit circle, thus any
-  // interval with (length <= 2*max_error) matches the empty interval, and any
-  // interval with (length >= 2*Pi - 2*max_error) matches the full interval.
+  // Return true if the length of the symmetric difference between the two
+  // intervals is at most the given tolerance.
   bool ApproxEquals(S1Interval const& y, double max_error = 1e-15) const;
-
-  // Low-level methods to modify one endpoint of an existing S1Interval.
-  // These methods should really be private because setting just one endpoint
-  // can violate the invariants maintained by S1Interval.  In particular:
-  //
-  //  - It is not valid to call these methods on an Empty() or Full()
-  //    interval, since these intervals do not have any endpoints.
-  //
-  //  - It is not allowed to set an endpoint to -Pi.  (When these methods are
-  //    used internally, values of -Pi have already been normalized to Pi.)
-  //
-  // The preferred way to modify both endpoints of an interval is to use a
-  // constructor, e.g. lng = S1Interval(lng_lo, lng_hi).
-  void set_lo(double p);
-  void set_hi(double p);
 
  private:
   enum ArgsChecked { ARGS_CHECKED };
@@ -215,6 +186,7 @@ class S1Interval {
 
   Vector2_d bounds_;
 };
+DECLARE_POD(S1Interval);
 
 inline S1Interval::S1Interval(double lo, double hi) : bounds_(lo, hi) {
   if (lo == -M_PI && hi != M_PI) set_lo(M_PI);
@@ -248,17 +220,7 @@ inline bool S1Interval::operator==(S1Interval const& y) const {
   return lo() == y.lo() && hi() == y.hi();
 }
 
-inline void S1Interval::set_lo(double p) {
-  bounds_[0] = p;
-  DCHECK(is_valid());
-}
-
-inline void S1Interval::set_hi(double p) {
-  bounds_[1] = p;
-  DCHECK(is_valid());
-}
-
-inline std::ostream& operator<<(std::ostream& os, S1Interval const& x) {
+inline ostream& operator<<(ostream& os, S1Interval const& x) {
   return os << "[" << x.lo() << ", " << x.hi() << "]";
 }
 
